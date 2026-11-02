@@ -289,8 +289,11 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 }
 
 fn config_dir() -> std::io::Result<PathBuf> {
-    let root = std::env::var_os("APPDATA").ok_or(std::io::ErrorKind::NotFound)?;
-    let dir = PathBuf::from(root).join("OpenUlanzi");
+    // Set by .cargo/config.toml for `cargo run`, so a dev build keeps its own settings.
+    let dir = match std::env::var_os("OPENULANZI_HOME") {
+        Some(dir) => PathBuf::from(dir),
+        None => PathBuf::from(std::env::var_os("APPDATA").ok_or(std::io::ErrorKind::NotFound)?).join("OpenUlanzi"),
+    };
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("config.toml");
     if !path.exists() {

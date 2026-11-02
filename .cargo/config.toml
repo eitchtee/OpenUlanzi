@@ -1,0 +1,3 @@
+[env]
+# Only `cargo run` sees this at runtime; built exes keep using %APPDATA%\OpenUlanzi.
+OPENULANZI_HOME = { value = "dev-config", relative = true }
