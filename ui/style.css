@@ -111,7 +111,30 @@ body.no-panels { grid-template-columns: 232px minmax(0, 1fr); }
 .key.wide { grid-column: span 2; aspect-ratio: auto; }
 .key img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .key.firmware::after { content: attr(data-face); position: absolute; inset: 0; display: grid; place-items: center; padding: 6px; overflow: hidden; font-size: clamp(12px, 1.25vw, 18px); line-height: 1.15; text-align: center; color: #8b9299; }
-.bound-layer::before { content: ""; position: absolute; top: 7px; right: 7px; z-index: 1; width: 8px; height: 8px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 0 2px var(--body); }
+/* State marks, like Morse: dot for click, two for double click, dash for hold, arc for turn.
+   Slots stay in place when empty, so a mark always means the same spot on the key. */
+.marks { position: absolute; top: 8px; left: 9px; z-index: 1; display: flex; gap: 4px; align-items: center; pointer-events: none; filter: drop-shadow(0 0 1.5px #000) drop-shadow(0 0 1px #000); }
+.mark { position: relative; display: inline-block; flex: none; visibility: hidden; }
+.mark.on { visibility: visible; }
+.mark.press-left::after, .mark.press-right::after { border-radius: 50%; background: var(--signal); }
+.mark.tap, .mark.double::before, .mark.double::after { width: 5px; height: 5px; border-radius: 50%; background: var(--signal); }
+.mark.double { width: 13px; height: 5px; }
+.mark.double::before, .mark.double::after { content: ""; position: absolute; top: 0; }
+.mark.double::before { left: 0; }
+.mark.double::after { right: 0; }
+.mark.long { width: 13px; height: 5px; border-radius: 3px; background: var(--signal); }
+/* Arcs show which way the knob turns; a dot inside means it is pressed down at the same time. */
+.mark.left, .mark.right, .mark.press-left, .mark.press-right { width: 16px; height: 16px; color: var(--signal); }
+.mark .glyph { display: block; width: 16px; height: 16px; }
+.mark.press-left::after, .mark.press-right::after { content: ""; position: absolute; left: 6px; bottom: 1px; width: 4px; height: 4px; }
+.side { padding-top: 9px; }
+.side .marks { top: 5px; left: 8px; }
+/* On a knob they sit on the dial, in two rows. */
+.knob .marks { inset: 0; display: grid; grid-template-columns: auto auto; gap: 3px 4px; place-content: center; place-items: center; }
+.knob .mark.tap { justify-self: center; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 16px; justify-content: center; width: 100%; max-width: 608px; color: rgba(237, 241, 238, .72); font-size: 12px; }
+.legend > span { display: inline-flex; gap: 6px; align-items: center; }
+.legend .mark { filter: none; }
 .side { align-self: center; height: 42px; border-radius: 10px; background: #2a2e33; box-shadow: inset 0 -2px 0 #16181b; font-size: 12px; }
 .knob-slot { display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 0; }
 .knob { width: min(72px, 100%); aspect-ratio: 1; border-radius: 50%; background: repeating-conic-gradient(#2d3137 0 6deg, #1f2226 6deg 12deg); box-shadow: 0 3px 0 #0f1113; }

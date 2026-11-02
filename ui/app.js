@@ -349,12 +349,45 @@ function applyPalette(item, target) {
   select(target);
 }
 
+/* What a control does, as marks: their shape names the state, and each keeps its place. */
+const KEY_STATES = [
+  ['tap', 'Click', (b) => b.action],
+  ['double', 'Double click', (b) => b.double],
+  ['long', 'Hold', (b) => b.hold],
+];
+const KNOB_STATES = [
+  ['tap', 'Click', (b) => b.action],
+  ['double', 'Double click', (b) => b.double],
+  ['left', 'Turn left', (b) => b.left],
+  ['right', 'Turn right', (b) => b.right],
+  ['press-left', 'Turn left while pressed', (b) => b.press_left],
+  ['press-right', 'Turn right while pressed', (b) => b.press_right],
+];
+
+const MARK_GLYPHS = {
+  left: 'arrow-arc-left-bold',
+  right: 'arrow-arc-right-bold',
+  'press-left': 'arrow-arc-left-bold',
+  'press-right': 'arrow-arc-right-bold',
+};
+
+function mark(kind, on) {
+  const glyph = MARK_GLYPHS[kind];
+  return h('span', { class: `mark ${kind}${on ? ' on' : ''}` }, glyph ? icon(glyph) : null);
+}
+
+function addMarks(el, b, states) {
+  const active = states.filter(([, , has]) => b && has(b));
+  el.append(h('span', { class: 'marks', 'aria-hidden': 'true' },
+    ...states.map((state) => mark(state[0], active.includes(state)))));
+  if (active.length) el.title = active.map(([, name]) => name).join(', ');
+}
+
 function keyButton(control, shown) {
   const locked = isBackKey(control);
   const b = locked ? BACK_BINDING : binding(control);
   const classes = ['ctl', 'key'];
   if (control === 'wide') classes.push('wide');
-  if (b?.hold) classes.push('bound-layer');
   const display = visualOf(b, control).display;
   const firmware = !['image', 'page_indicator'].includes(display);
   if (firmware) classes.push('firmware');
@@ -373,13 +406,17 @@ function keyButton(control, shown) {
     keyImage(visualOf(b, control), control === 'wide').then(async (url) => {
       const img = h('img', { src: url, alt: '', draggable: false });
       await img.decode().catch(() => {});
-      if (el.dataset.visual === visual) el.replaceChildren(img);
+      if (el.dataset.visual !== visual) return;
+      const old = el.querySelector('img');
+      if (old) old.replaceWith(img);
+      else el.prepend(img);
     });
   }
   if (locked) {
     el.classList.add('locked');
     el.dataset.control = control;
   } else {
+    addMarks(el, b, KEY_STATES);
     wireDrag(el, control);
   }
   return el;
@@ -388,10 +425,11 @@ function keyButton(control, shown) {
 function sideButton(control) {
   const b = binding(control);
   const el = h('button', {
-    class: `ctl side${b?.hold ? ' bound-layer' : ''}`,
+    class: 'ctl side',
     'aria-pressed': String(state.selected === control),
     onclick: () => select(control),
-  }, b?.label || (b?.hold ? 'Hold' : (b ? 'In use' : 'Empty')));
+  }, b?.label || (b ? 'In use' : 'Empty'));
+  addMarks(el, b, KEY_STATES);
   wireDrag(el, control);
   return el;
 }
@@ -404,6 +442,7 @@ function knob(control) {
     'aria-label': `${controlName(control)}${b?.label ? `: ${b.label}` : ''}`,
     onclick: () => select(control),
   });
+  addMarks(el, b, KNOB_STATES);
   wireDrag(el, control);
   return h('div', { class: 'knob-slot' }, el, h('span', { class: 'knob-label' }, b?.label || (b ? 'In use' : 'Empty')));
 }
@@ -610,13 +649,18 @@ function profileMenu(at, index) {
   ]);
 }
 
+function legend() {
+  const entry = (kinds, text) => h('span', {}, ...kinds.map((kind) => mark(kind, true)), text);
+  return h('p', { class: 'legend' }, entry(['tap'], 'Click'), entry(['double'], 'Double click'), entry(['long'], 'Hold'), entry(['left', 'right'], 'Turn'), entry(['press-left', 'press-right'], 'Turn while pressed'));
+}
+
 function drawKeysView() {
   const more = iconButton('dots-three-bold', 'Profile options', (e) => profileMenu(menuPoint(e), state.profile));
   const head = h('div', { class: 'bench-head' }, h('div', { class: 'profile-bar' }, h('h1', {}, profile().name), more), pageTabs());
   const bench = h('div', {
     class: 'bench',
     onclick: (e) => { if (e.target === bench) select(null); },
-  }, head, h('div', { class: 'deck' }));
+  }, head, h('div', { class: 'deck' }), legend());
   $('stage').replaceChildren(bench);
   drawDeck();
 }
