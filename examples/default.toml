@@ -1,0 +1,121 @@
+# Headless: cargo run --release -- examples/default.toml
+# Saved changes are picked up within a second.
+#
+# Controls: 0-12 (row * 5 + column), wide, side1, side2, knob1, knob2, knob3
+# `double` runs on a double click, on keys and knobs. A single click then waits double_ms.
+# Any control except a knob can be held, because knobs don't report hold time.
+#
+# action = { hotkey = "ctrl+shift+f13" } | { open = "path, shortcut or URL" }
+#        | { text = "types this" } | { close = "app.exe" } | { page = "name" } | "back"
+#        | { profile = "name" } | "next_page" | "prev_page" | { brightness = -10 } | { play_sound = "file" } | "stop_sound"
+#        | { app_volume = 5 } | "app_volume_reset"
+#        | { one_shot = { page = "name" } } returns after the next button press; also takes profile
+#        | { scroll_up = 3 } | { scroll_down = 3 } | { scroll_left = 3 } | { scroll_right = 3 }
+#        | { sequence = [..., { delay = 100 }, ...] } | { toggle = [...] } | { random = [...] }
+#
+# `hold` runs an action once the key has been held for hold_ms, drawing a border as it goes,
+# and letting go early cancels it. hold = { show = "page" } instead keeps a page up until
+# release, replacing everything on the deck: controls that page leaves empty are blank and do
+# nothing. It appears at once, unless the key also has `action` or `double`: then a tap runs
+# those, and a hold (or a second key pressed meanwhile) shows the page.
+
+# name = "Desk deck"
+model = "d200x"  # d200x, or d200h and d200 for keys only. USB cannot tell them apart.
+brightness = 80
+locked_brightness = 0
+hold_ms = 200  # to show a page on keys that also have a click action
+hold_action_ms = 600  # to run a hold action
+double_ms = 250
+wide = "time"  # dial, time, time_weekday, time_date, date_time_weekday, stats, image
+twelve_hour = false
+date_format = ""  # Windows picture like dd/MM/yyyy; empty is the system short date
+weekday_format = "ddd"  # ddd is short, dddd is full, in the Windows language
+
+# Set default = true on a profile to make it the default; otherwise it is the first without conditions.
+# { profile = "@app" } goes to the focused app's profile, { profile = "@default" } to the default.
+# A page with folder = true is opened by an action and has Back fixed on key 0. Knobs and side
+# buttons stay those of the page it was opened from. Profiles with conditions (exe, title,
+# title_regex; all given must match) follow an app, and the first match in file order wins.
+# on_focus switches to it while the app has focus; on_hold lends its first page to @app keys.
+# Pages belong to a profile, and `layer` and `page` names refer to pages in that profile.
+
+[[profile]]
+name = "Default"
+
+[[profile.page]]
+name = "main"
+
+[profile.page.keys.0]
+label = "Copy"
+icon = "ph:copy-bold"
+action = { hotkey = "ctrl+c" }
+
+[profile.page.keys.1]
+label = "Paste"
+icon = "ph:clipboard-text-bold"
+action = { hotkey = "ctrl+v" }
+
+[profile.page.keys.4]
+label = "Mute"
+icon = "ph:speaker-x-fill"
+color = "#ff5c5c"
+action = { hotkey = "mute" }
+
+[profile.page.keys.side1]
+hold = { show = "media" }
+
+[profile.page.keys.side2]
+hold = { show = "@app" }
+
+[profile.page.keys.12]
+label = "Next"
+action = "next_page"
+
+[profile.page.keys.knob3]
+left = { hotkey = "volume_down" }
+right = { hotkey = "volume_up" }
+action = { hotkey = "mute" }
+
+[profile.page.keys.knob1]
+left = { brightness = -10 }
+right = { brightness = 10 }
+
+[[profile.page]]
+name = "second"
+
+[profile.page.keys.0]
+label = "Web"
+action = { open = "https://github.com" }
+
+[profile.page.keys.12]
+label = "Back"
+action = "prev_page"
+
+[[profile.page]]
+name = "media"
+hidden = true  # next_page and prev_page skip it
+
+[profile.page.keys.5]
+label = "Prev"
+action = { hotkey = "prev_track" }
+
+[profile.page.keys.6]
+label = "Play"
+action = { hotkey = "play_pause" }
+
+[profile.page.keys.7]
+label = "Next"
+action = { hotkey = "next_track" }
+
+[[profile]]
+name = "Notepad"
+exe = "notepad.exe"
+# title = "substring"
+# title_regex = "^draft"
+
+[[profile.page]]
+name = "main"
+
+[profile.page.keys.0]
+label = "Save"
+action = { hotkey = "ctrl+s" }
