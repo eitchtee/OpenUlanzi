@@ -206,15 +206,21 @@ impl<F: FnMut(&Status)> App<F> {
             pngs.push((*index, self.renderer.png(visual, false)?.to_vec()));
         }
         let cells: Vec<(u8, &[u8])> = pngs.iter().map(|(i, p)| (*i, p.as_slice())).collect();
-        let image = match wide.display.mode() {
-            2 => Some(self.renderer.png(&wide, true)?.to_vec()),
-            _ => None,
+        let firmware = wide.display.mode() != Display::Image.mode();
+        let image = if !firmware {
+            Some(self.renderer.png(&wide, true)?.to_vec())
+        } else if !wide.image.is_empty() {
+            // The firmware draws its clock over the picture, so only the picture goes under it.
+            let under = Visual { image: wide.image.clone(), image_crop: wide.image_crop, background: wide.background.clone(), ..Default::default() };
+            Some(self.renderer.png(&under, true)?.to_vec())
+        } else {
+            None
         };
         let cell = protocol::Wide { mode: wide.display.mode(), image: image.as_deref() };
         deck.bundle(&protocol::build_bundle(&cells, cell)?, painted.is_empty())?;
         self.in_flight = Some(Instant::now());
         // A firmware face has to be re-sent after any bundle, since the bundle names its cell.
-        self.wide_due = image.is_none() || self.wide != Some(wide.display);
+        self.wide_due = firmware || self.wide != Some(wide.display);
         self.wide = Some(wide.display);
         painted.extend(changed);
         painted.insert(WIDE, wide);

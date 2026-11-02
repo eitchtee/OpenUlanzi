@@ -245,7 +245,7 @@ const context = {
 
 function wideDisplay(b) {
   if (b?.display) return b.display;
-  return b?.label || b?.icon || b?.color || b?.background ? 'image' : state.cfg.wide;
+  return b?.label || b?.icon || b?.image || b?.color || b?.background ? 'image' : state.cfg.wide;
 }
 
 function visualOf(b, control) {
@@ -255,6 +255,9 @@ function visualOf(b, control) {
     icon: b?.icon ?? '',
     color: b?.color ?? state.cfg.color,
     background: b?.background ?? state.cfg.background,
+    image: b?.image ?? '',
+    image_crop: b?.image_crop ?? null,
+    icon_crop: b?.icon_crop ?? null,
     display,
     big: display === 'page_indicator' ? '1/2' : '',
   };
@@ -542,12 +545,14 @@ function keyButton(control, shown) {
     onclick: (e) => (locked ? notify('A folder always keeps Back on this key.') : pickControl(e, control)),
   });
   if (firmware) el.dataset.face = WIDE_DISPLAYS.find(([id]) => id === display)?.[1] ?? '';
-  else {
+  // A firmware face is drawn over the background image alone, as the deck does.
+  const look = firmware ? (b?.image ? { ...visualOf(b, control), label: '', icon: '', display: 'image', big: '' } : null) : visualOf(b, control);
+  if (look) {
     // Keep showing the old image until the new one can paint, or the key flashes black.
     if (shown) el.append(shown);
-    const visual = JSON.stringify(visualOf(b, control));
+    const visual = JSON.stringify(look);
     el.dataset.visual = visual;
-    keyImage(visualOf(b, control), control === 'wide').then(async (url) => {
+    keyImage(look, control === 'wide').then(async (url) => {
       const img = h('img', { src: url, alt: '', draggable: false });
       await img.decode().catch(() => {});
       if (el.dataset.visual !== visual) return;
@@ -916,6 +921,84 @@ function iconPicker(onPick) {
   search.focus();
 }
 
+const WIDE_ASPECT = 458 / 196;
+const PICTURE = /\.(png|jpe?g|gif|webp)$/i;
+
+/**
+ * Drag the frame over the picture to pick the part shown; the slider sizes it. The frame keeps the
+ * shape of the key, so the picture is never squashed. Calls back with [x, y, width, height] as
+ * fractions of the picture, or undefined for the whole picture.
+ */
+async function cropPicker(path, aspect, current, onPick) {
+  let url;
+  try {
+    url = URL.createObjectURL(new Blob([await invoke('picture', { path })]));
+  } catch (e) {
+    return notify(`Cannot open the picture: ${e}`, true);
+  }
+  const img = h('img', { src: url, alt: '', draggable: false });
+  const frame = h('div', { class: 'crop-frame' });
+  const stage = h('div', { class: 'crop-stage' }, img, frame);
+  const size = h('input', { type: 'range', min: 10, max: 100, value: 100, 'aria-label': 'Size' });
+  let box = { x: 0, y: 0, w: 0, h: 0 };
+  // The largest frame of this shape that fits the picture as shown.
+  const largest = () => {
+    const [w, h] = [img.clientWidth, img.clientHeight];
+    return w / h > aspect ? { w: h * aspect, h } : { w, h: w / aspect };
+  };
+  const place = (x, y) => {
+    box.x = Math.min(Math.max(0, x), img.clientWidth - box.w);
+    box.y = Math.min(Math.max(0, y), img.clientHeight - box.h);
+    Object.assign(frame.style, { left: `${box.x}px`, top: `${box.y}px`, width: `${box.w}px`, height: `${box.h}px` });
+  };
+  const resize = () => {
+    const max = largest();
+    const [cx, cy] = [box.x + box.w / 2, box.y + box.h / 2];
+    box.w = (max.w * size.value) / 100;
+    box.h = (max.h * size.value) / 100;
+    place(cx - box.w / 2, cy - box.h / 2);
+  };
+  size.oninput = resize;
+  frame.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    frame.setPointerCapture(e.pointerId);
+    const [startX, startY, fromX, fromY] = [e.clientX, e.clientY, box.x, box.y];
+    frame.onpointermove = (m) => place(fromX + m.clientX - startX, fromY + m.clientY - startY);
+    frame.onpointerup = () => { frame.onpointermove = null; };
+  });
+  const done = (crop) => {
+    $('dialog').close();
+    URL.revokeObjectURL(url);
+    onPick(crop);
+  };
+  const use = () => {
+    const [w, h] = [img.clientWidth, img.clientHeight];
+    // Rounded down, so the crop can never reach past the picture's edge.
+    const f = (v) => Math.floor(v * 10000) / 10000;
+    done([f(box.x / w), f(box.y / h), f(box.w / w), f(box.h / h)]);
+  };
+  openDialog(
+    dialogHead('Choose the part to show'),
+    section('Picture', stage, field('Size', size)),
+    dialogFoot(
+      h('button', { class: 'plain', onclick: () => done(undefined) }, 'Use the whole picture'),
+      h('button', { class: 'plain', onclick: () => $('dialog').close() }, 'Cancel'),
+      h('button', { class: 'plain primary', onclick: use }, 'Use this part')),
+  );
+  $('dialog').classList.add('medium');
+  await img.decode().catch(() => {});
+  const max = largest();
+  if (current) {
+    const [x, y, w] = current;
+    size.value = Math.round(((w * img.clientWidth) / max.w) * 100);
+    box = { x: 0, y: 0, w: w * img.clientWidth, h: (w * img.clientWidth) / aspect };
+    place(x * img.clientWidth, y * img.clientHeight);
+  } else {
+    box = { x: 0, y: 0, ...max };
+    place((img.clientWidth - max.w) / 2, (img.clientHeight - max.h) / 2);
+  }
+}
+
 function keyboardPicker(current, onSave) {
   const tokens = current ? current.split('+').map((t) => t.trim().toLowerCase()).filter(Boolean) : [];
   const preferred = recall('keyboard') ?? (navigator.language === 'pt-BR' ? 'Brazilian (ABNT2)' : 'US (ANSI)');
@@ -1241,15 +1324,15 @@ function displaySection(control, b) {
   return h('label', { class: 'check' }, box, 'Show the page number');
 }
 
-function iconTile(control, b) {
-  const setIcon = setter(control, 'icon');
+/** `crop`, when given, offers cropping a picture icon: { value, set }. */
+function iconTile(value, setIcon, removeLabel = 'Remove icon', crop = null) {
   const file = () => invoke('pick_file', { name: 'Icons', extensions: ['svg', 'png'] }).then((path) => { if (path) setIcon(path); });
-  const library = b?.icon?.startsWith('ph:');
-  const face = library ? icon(b.icon.slice(3)) : b?.icon ? 'File' : icon('plus-bold');
+  const library = value?.startsWith('ph:');
+  const face = library ? icon(value.slice(3)) : value ? 'File' : icon('plus-bold');
   const tile = h('button', {
     type: 'button',
-    class: `icon-tile${b?.icon ? (library ? '' : ' file') : ' empty'}`,
-    title: b?.icon && !library ? b.icon : 'Choose icon',
+    class: `icon-tile${value ? (library ? '' : ' file') : ' empty'}`,
+    title: value && !library ? value : 'Choose icon',
     'aria-label': 'Choose icon',
     onclick: () => iconPicker((value) => setIcon(value)),
     oncontextmenu: (e) => {
@@ -1258,8 +1341,9 @@ function iconTile(control, b) {
       openMenu(menuPoint(e), [
         { label: 'Choose icon', icon: 'image-bold', run: () => iconPicker((value) => setIcon(value)) },
         { label: 'Use my own file', icon: 'folder-open-bold', run: file },
+        crop && PICTURE.test(value ?? '') && { label: 'Crop picture', icon: 'crop-bold', run: () => cropPicker(value, 1, crop.value, crop.set) },
         '-',
-        { label: 'Remove icon', icon: 'x-bold', danger: true, disabled: !b?.icon, run: () => setIcon(undefined) },
+        { label: removeLabel, icon: 'x-bold', danger: true, disabled: !value, run: () => setIcon(undefined) },
       ]);
     },
   }, face);
@@ -1272,8 +1356,21 @@ function appearance(control, b) {
   if (!hasScreen(control)) return [label];
 
   const parts = [displaySection(control, b)];
+  // A new picture makes the old crop meaningless.
+  const setPicture = (key, crop) => (value) => {
+    edit(control, (x) => { x[key] = value; delete x[crop]; });
+    drawInspector();
+  };
+  const aspect = control === 'wide' ? WIDE_ASPECT : 1;
+  const imageField = () => {
+    const setImage = setPicture('image', 'image_crop');
+    const image = h('input', { type: 'text', value: b?.image ?? '', placeholder: 'None', 'aria-label': 'Background image', onchange: () => setImage(image.value || undefined) });
+    const crop = b?.image ? h('button', { type: 'button', onclick: () => cropPicker(b.image, aspect, b.image_crop, setter(control, 'image_crop')) }, 'Crop') : null;
+    return field('Background image', h('div', { class: 'row' }, image, browseButton(['png', 'jpg', 'jpeg', 'gif', 'webp'], setImage), crop));
+  };
   if (control === 'wide' && !['image', 'page_indicator'].includes(wideDisplay(b))) {
-    parts.push(h('p', { class: 'hint' }, 'The deck draws this face itself, so the label, icon and colours do not apply.'));
+    parts.push(imageField());
+    parts.push(h('p', { class: 'hint' }, 'The deck draws this face itself, over the background image. Its colours cannot be changed, and the label and icon do not apply.'));
     return parts;
   }
   const swatch = (key, title, fallback) => {
@@ -1285,9 +1382,10 @@ function appearance(control, b) {
     });
     return h('label', {}, input, title);
   };
-  parts.push(h('div', { class: 'looks' }, iconTile(control, b),
+  parts.push(h('div', { class: 'looks' }, iconTile(b?.icon, setPicture('icon', 'icon_crop'), 'Remove icon', { value: b?.icon_crop, set: setter(control, 'icon_crop') }),
     h('div', { class: 'swatches' }, swatch('color', 'Icon', state.cfg.color), swatch('background', 'Background', state.cfg.background))));
   parts.push(field('Label', label));
+  parts.push(imageField());
   return parts;
 }
 

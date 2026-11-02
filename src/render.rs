@@ -1,6 +1,6 @@
 //! Bakes a key's look into a PNG. Icons are `ph:<name>` from the embedded Phosphor set, or `.svg` and
 //! `.png` files; relative paths resolve against the config.
-use crate::config::{Visual, HOLD_STEPS};
+use crate::config::{Crop, Visual, HOLD_STEPS};
 use anyhow::{anyhow, Context, Result};
 use resvg::tiny_skia::{FilterQuality, Pixmap, PixmapPaint, Transform};
 use resvg::usvg;
@@ -57,6 +57,19 @@ impl Renderer {
         Ok(tree.size())
     }
 
+    fn href(&self, file: &str) -> String {
+        escape(&self.dir.join(file).to_string_lossy()).replace('"', "&quot;")
+    }
+
+    /// The picture stretched over a unit square, of which the crop is shown in the given box. The
+    /// editor keeps the crop at the box's shape, so nothing ends up squashed.
+    fn cropped(&self, file: &str, Crop([x, y, w, h]): Crop, place: &str) -> String {
+        format!(
+            r#"<svg {place} viewBox="{x} {y} {w} {h}" preserveAspectRatio="none"><image href="{}" width="1" height="1" preserveAspectRatio="none"/></svg>"#,
+            self.href(file)
+        )
+    }
+
     fn icon(&self, visual: &Visual, canvas: &mut Pixmap, y: f32) -> Result<()> {
         let path = self.dir.join(&visual.icon);
         let x = (canvas.width() as f32 - ICON_BOX) / 2.0;
@@ -74,6 +87,14 @@ impl Renderer {
             let scale = ICON_BOX / tree.size().width().max(tree.size().height());
             let at = Transform::from_translate(x, y).pre_scale(scale, scale);
             resvg::render(&tree, at, &mut canvas.as_mut());
+        } else if let Some(crop) = visual.icon_crop {
+            let place = format!(r#"x="{x}" y="{y}" width="{ICON_BOX}" height="{ICON_BOX}""#);
+            let source = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{SIZE}">{}</svg>"#,
+                canvas.width(),
+                self.cropped(&visual.icon, crop, &place)
+            );
+            self.svg(&source, canvas, Transform::identity())?;
         } else {
             let image = Pixmap::load_png(&path).with_context(|| path.display().to_string())?;
             let scale = ICON_BOX / image.width().max(image.height()) as f32;
@@ -103,9 +124,18 @@ impl Renderer {
                 escape(&v.big)
             )
         });
+        // usvg reads PNG, JPEG, GIF and WebP, and skips a file it cannot load.
+        let image = (!v.image.is_empty()).then(|| match v.image_crop {
+            Some(crop) => self.cropped(&v.image, crop, &format!(r#"width="{width}" height="{SIZE}""#)),
+            None => format!(
+                r#"<image href="{}" width="100%" height="100%" preserveAspectRatio="xMidYMid slice"/>"#,
+                self.href(&v.image)
+            ),
+        });
         let background = format!(
-            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{SIZE}"><rect width="100%" height="100%" fill="{}"/>{}{}</svg>"#,
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{SIZE}"><rect width="100%" height="100%" fill="{}"/>{}{}{}</svg>"#,
             v.background,
+            image.as_deref().unwrap_or(""),
             big.as_deref().unwrap_or(""),
             text.as_deref().unwrap_or("")
         );
@@ -200,6 +230,44 @@ mod tests {
         let v = Visual { big: "1/2".into(), color: "#ffffff".into(), background: "#000000".into(), ..Default::default() };
         let image = pixmap(r.png(&v, false).unwrap());
         assert!((40..156).any(|x| image.pixel(x, 96).unwrap().red() > 128));
+    }
+
+    #[test]
+    fn background_image_fills_the_key_under_the_label() {
+        let dir = std::env::temp_dir().join("openulanzi-bg-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut red = Pixmap::new(40, 20).unwrap();
+        red.fill(resvg::tiny_skia::Color::from_rgba8(255, 0, 0, 255));
+        red.save_png(dir.join("a & b.png")).unwrap();
+        let mut r = Renderer::new(dir);
+        let v = Visual { image: "a & b.png".into(), label: "x".into(), background: "#000000".into(), ..Default::default() };
+        let image = pixmap(r.png(&v, false).unwrap());
+        let corner = image.pixel(2, 2).unwrap();
+        assert_eq!((corner.red(), corner.green()), (255, 0), "covers the key, cropping the sides");
+        let missing = Visual { image: "missing.jpg".into(), background: "#000000".into(), ..Default::default() };
+        assert!(r.png(&missing, false).is_ok());
+    }
+
+    #[test]
+    fn crops_pick_the_part_of_a_picture_shown() {
+        let dir = std::env::temp_dir().join("openulanzi-crop-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Left half red, right half blue.
+        let mut halves = Pixmap::new(40, 20).unwrap();
+        halves.fill(resvg::tiny_skia::Color::from_rgba8(0, 0, 255, 255));
+        let red = resvg::tiny_skia::Rect::from_xywh(0.0, 0.0, 20.0, 20.0).unwrap();
+        let paint = resvg::tiny_skia::Paint { shader: resvg::tiny_skia::Shader::SolidColor(resvg::tiny_skia::Color::from_rgba8(255, 0, 0, 255)), ..Default::default() };
+        halves.fill_rect(red, &paint, Transform::identity(), None);
+        halves.save_png(dir.join("halves.png")).unwrap();
+        let mut r = Renderer::new(dir);
+        let right = Some(Crop([0.5, 0.0, 0.5, 1.0]));
+        let v = Visual { image: "halves.png".into(), image_crop: right, background: "#000000".into(), ..Default::default() };
+        let image = pixmap(r.png(&v, false).unwrap());
+        assert_eq!(image.pixel(20, 98).unwrap().blue(), 255, "the left edge shows the right half");
+        let v = Visual { icon: "halves.png".into(), icon_crop: right, background: "#000000".into(), ..Default::default() };
+        let image = pixmap(r.png(&v, false).unwrap());
+        let center = image.pixel(98, 98).unwrap();
+        assert_eq!((center.red(), center.blue()), (0, 255), "the icon shows only the right half");
     }
 
     #[test]

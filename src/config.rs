@@ -149,6 +149,31 @@ impl Display {
     }
 }
 
+/// Part of a picture as `[x, y, width, height]`, each a fraction of the picture's size.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Crop(pub [f32; 4]);
+
+// Visuals key the image cache, and a crop never holds NaN once validated.
+impl Eq for Crop {}
+
+impl std::hash::Hash for Crop {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        self.0.map(f32::to_bits).hash(h);
+    }
+}
+
+impl Crop {
+    fn check(&self) -> Result<()> {
+        let [x, y, w, h] = self.0;
+        let inside = |start: f32, len: f32| start >= 0.0 && len > 0.0 && start + len <= 1.0001;
+        if !(inside(x, w) && inside(y, h)) {
+            bail!("crop {:?} must lie inside the picture, as fractions from 0 to 1", self.0);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Visual {
@@ -156,6 +181,10 @@ pub struct Visual {
     pub icon: String,
     pub color: String,
     pub background: String,
+    /// Picture under the label and icon, filling the key.
+    pub image: String,
+    pub image_crop: Option<Crop>,
+    pub icon_crop: Option<Crop>,
     pub display: Display,
     /// Large centred text, such as the page indicator's `2/3`.
     pub big: String,
@@ -172,6 +201,12 @@ pub struct Binding {
     pub icon: String,
     pub color: Option<String>,
     pub background: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub image: String,
+    /// The part of `image` shown; without it the picture is centred and fills the key.
+    pub image_crop: Option<Crop>,
+    /// The part of a picture icon shown; without it the whole picture is.
+    pub icon_crop: Option<Crop>,
     pub display: Option<Display>,
     /// Keys: runs on press, or on tap when `hold` is also set. Knobs: runs on click.
     pub action: Option<Action>,
@@ -576,6 +611,9 @@ impl Config {
                     for c in [&b.color, &b.background].into_iter().flatten() {
                         check_color(c).context(ctx.clone())?;
                     }
+                    for crop in [&b.image_crop, &b.icon_crop].into_iter().flatten() {
+                        crop.check().context(ctx.clone())?;
+                    }
                     match &b.hold {
                         Some(Action::Show(l)) if l != APP_LAYER && !names.contains(l) => {
                             bail!("{ctx}: unknown page {l:?}");
@@ -607,6 +645,9 @@ impl Config {
             icon: b.icon.clone(),
             color: b.color.clone().unwrap_or_else(|| self.color.clone()),
             background: b.background.clone().unwrap_or_else(|| self.background.clone()),
+            image: b.image.clone(),
+            image_crop: b.image_crop,
+            icon_crop: b.icon_crop,
             display: b.display.unwrap_or_default(),
             big: String::new(),
             progress: 0,
@@ -616,7 +657,7 @@ impl Config {
     /// The wide screen follows the global setting until a binding gives it something to draw.
     pub fn wide_display(&self, b: Option<&Binding>) -> Display {
         let Some(b) = b else { return self.wide };
-        let drawn = !b.label.is_empty() || !b.icon.is_empty() || b.color.is_some() || b.background.is_some();
+        let drawn = !b.label.is_empty() || !b.icon.is_empty() || !b.image.is_empty() || b.color.is_some() || b.background.is_some();
         b.display.unwrap_or(if drawn { Display::Image } else { self.wide })
     }
 

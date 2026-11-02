@@ -196,6 +196,17 @@ fn icon_library() -> Vec<(&'static str, &'static str)> {
     icons
 }
 
+/// A picture's bytes, so the editor can show it for cropping.
+#[tauri::command]
+fn picture(path: String, state: State<Shared>) -> Result<tauri::ipc::Response, String> {
+    let path = state.dir.join(path);
+    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
+    if !["png", "jpg", "jpeg", "gif", "webp"].contains(&extension.as_str()) {
+        return Err("only pictures can be shown".into());
+    }
+    std::fs::read(&path).map(tauri::ipc::Response::new).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 #[tauri::command]
 async fn pick_file(app: AppHandle, name: String, extensions: Vec<String>) -> Option<String> {
     let mut dialog = app.dialog().file();
@@ -376,7 +387,7 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _, _| show_main(app)))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--hidden"])))
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![app_version, check_update, install_update, open_release_notes, list_devices, forget_device, get_config, save_config, get_status, get_plugins, open_plugins_folder, render, pick_file, icon_library, app_icon])
+        .invoke_handler(tauri::generate_handler![app_version, check_update, install_update, open_release_notes, list_devices, forget_device, get_config, save_config, get_status, get_plugins, open_plugins_folder, render, picture, pick_file, icon_library, app_icon])
         .on_window_event(|window, event| {
             // Closing keeps the deck running; Quit in the tray ends it.
             if let (WindowEvent::CloseRequested { api, .. }, "main") = (event, window.label()) {

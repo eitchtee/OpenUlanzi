@@ -2,6 +2,7 @@
 # Saved changes are picked up within a second.
 #
 # Controls: 0-12 (row * 5 + column), wide, side1, side2, knob1, knob2, knob3
+# A key can set image = "photo.jpg" (png, jpg, gif or webp) to fill its background, under the label and icon.
 # `double` runs on a double click, on keys and knobs. A single click then waits double_ms.
 # Any control except a knob can be held, because knobs don't report hold time.
 #
