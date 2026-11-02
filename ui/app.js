@@ -1073,7 +1073,8 @@ function actionEditor(label, action, commit, options = {}) {
   } else if (type === 'text') {
     parts.push(textField('text', 'Text to type'));
   } else if (type === 'open') {
-    parts.push(h('div', { class: 'row' }, textField('open', 'Path or https://…'), browseButton([], (path) => commit({ open: path }))));
+    parts.push(h('div', { class: 'row' }, textField('open', 'Path, folder, URL or command'), browseButton([], (path) => commit({ open: path }))));
+    parts.push(h('p', { class: 'hint' }, 'Works like the Run dialog: notepad file.txt, ms-settings:, or shell:AppsFolder\<app id> for Store apps. Quote a path with spaces to give it arguments.'));
   } else if (type === 'close') {
     parts.push(textField('close', 'Program, like notepad.exe'));
     parts.push(h('p', { class: 'hint' }, 'Leave it empty to close the focused window.'));

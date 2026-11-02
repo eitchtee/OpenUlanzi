@@ -5,7 +5,7 @@
 # `double` runs on a double click, on keys and knobs. A single click then waits double_ms.
 # Any control except a knob can be held, because knobs don't report hold time.
 #
-# action = { hotkey = "ctrl+shift+f13" } | { open = "path, shortcut or URL" }
+# action = { hotkey = "ctrl+shift+f13" } | { open = "path, folder, URL or command, like the Run dialog" }
 #        | { text = "types this" } | { close = "app.exe" } | { page = "name" } | "back"
 #        | { profile = "name" } | "next_page" | "prev_page" | { brightness = -10 } | { play_sound = "file" } | "stop_sound"
 #        | { app_volume = 5 } | "app_volume_reset"

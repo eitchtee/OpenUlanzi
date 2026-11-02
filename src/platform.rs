@@ -15,6 +15,7 @@ use windows::Win32::Media::Audio::{
 };
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED};
 use std::ffi::c_void;
+use std::path::Path;
 use std::os::windows::process::CommandExt;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -140,15 +141,30 @@ pub fn send_hotkey(hotkey: &str) -> Result<()> {
     Ok(())
 }
 
+/// Like the Run dialog: a file, folder, URL or `shell:` target, or a program followed by its
+/// arguments. A path with spaces is taken whole when it exists, and otherwise needs quotes.
 pub fn open(target: &str) -> Result<()> {
+    let (file, args) = split_command(target.trim(), |p| Path::new(p).exists());
+    let args = (!args.is_empty()).then(|| HSTRING::from(args));
     let result = unsafe {
-        ShellExecuteW(Some(HWND::default()), w!("open"), &HSTRING::from(target), None, None, SW_SHOWNORMAL)
+        let args = args.as_ref().map_or(PCWSTR::null(), |a| PCWSTR(a.as_ptr()));
+        ShellExecuteW(Some(HWND::default()), w!("open"), &HSTRING::from(file), args, None, SW_SHOWNORMAL)
     };
     // Documented contract: values above 32 mean success.
     if result.0 as usize <= 32 {
         bail!("could not open {target:?} (code {})", result.0 as usize);
     }
     Ok(())
+}
+
+fn split_command(command: &str, exists: impl Fn(&str) -> bool) -> (&str, &str) {
+    if let Some((file, args)) = command.strip_prefix('"').and_then(|rest| rest.split_once('"')) {
+        return (file, args.trim_start());
+    }
+    if exists(command) {
+        return (command, "");
+    }
+    command.split_once(char::is_whitespace).map_or((command, ""), |(file, args)| (file, args.trim_start()))
 }
 
 fn process_path(pid: u32) -> Option<String> {
@@ -505,6 +521,15 @@ pub fn stop_sound() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn commands_split_like_the_run_dialog() {
+        let none = |_: &str| false;
+        assert_eq!(split_command("notepad", none), ("notepad", ""));
+        assert_eq!(split_command("notepad  a b.txt", none), ("notepad", "a b.txt"));
+        assert_eq!(split_command(r#""C:\My App\x.exe" --flag"#, none), (r"C:\My App\x.exe", "--flag"));
+        assert_eq!(split_command(r"C:\My Scripts\a b.ahk", |_| true), (r"C:\My Scripts\a b.ahk", ""));
+        assert_eq!(split_command(r"shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App", none).1, "");
+    }
     use super::*;
 
     #[test]
