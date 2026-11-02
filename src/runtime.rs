@@ -228,6 +228,10 @@ impl<F: FnMut(&Status)> App<F> {
         match Config::load(&self.path) {
             Ok(cfg) => {
                 self.renderer.forget_images(); // an icon file may have changed behind the same path
+                // Only a changed setting applies, so saving anything else keeps what the knobs set.
+                if cfg.brightness != self.engine.cfg.brightness {
+                    self.brightness = cfg.brightness;
+                }
                 self.engine.reload(cfg);
                 println!("config reloaded");
             }
@@ -246,7 +250,11 @@ impl<F: FnMut(&Status)> App<F> {
     fn housekeeping(&mut self, deck: &mut Deck, painted: &mut HashMap<u8, Visual>) -> Result<()> {
         let clock_style = |cfg: &Config| (cfg.twelve_hour, cfg.date_format.clone(), cfg.weekday_format.clone());
         let style = clock_style(&self.engine.cfg);
+        let brightness = self.current_brightness();
         self.reload_if_changed();
+        if self.current_brightness() != brightness {
+            set_brightness(deck, self.current_brightness())?;
+        }
         if clock_style(&self.engine.cfg) != style {
             *painted = self.takeover(deck)?;
         }
