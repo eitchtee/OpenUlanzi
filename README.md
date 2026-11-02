@@ -15,6 +15,8 @@ An open configurator for Ulanzi stream decks, for people who want more than Ulan
 - **Over 3,000 built-in icons.** The Phosphor bold and filled sets, or your own SVG and PNG files.
 - **Firmware clock faces** on the wide screen, with your own date format.
 - **Several decks at once**, each with its own setup.
+- **Sleep when you do.** The deck turns off after a set idle time or when Windows turns the screens off.
+- **Updates in place.** The app finds new versions and installs the right build for your copy.
 
 | Icon picker | Hotkey picker |
 | --- | --- |
