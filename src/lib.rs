@@ -3,6 +3,7 @@ pub mod device;
 pub mod engine;
 pub mod obs;
 pub mod platform;
+pub mod plugin;
 pub mod protocol;
 pub mod render;
 pub mod runtime;

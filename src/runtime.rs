@@ -3,6 +3,7 @@ use crate::config::{Action, Config, Display, Visual};
 use crate::device::Deck;
 use crate::engine::Engine;
 use crate::obs::{Obs, ObsState};
+use crate::plugin::{PluginState, Plugins};
 use crate::protocol::{self, CMD_BRIGHTNESS, CMD_LOCK, CMD_SMALL_WINDOW, CMD_UNLOCK, WIDE};
 use crate::{platform, render::Renderer};
 use anyhow::Result;
@@ -39,6 +40,7 @@ pub struct Status {
     pub view: Vec<(u8, Visual)>,
     pub volume: Option<VolumePopup>,
     pub obs: ObsState,
+    pub plugins: Vec<PluginState>,
 }
 
 /// The latest app volume change, for the on-screen popup.
@@ -71,6 +73,7 @@ struct App<F> {
     steps: (Sender<Action>, Receiver<Action>),
     volume: Option<VolumePopup>,
     obs: Obs,
+    plugins: Arc<Plugins>,
     wide: Option<Display>,
     /// A bundle the firmware may still be unpacking.
     in_flight: Option<Instant>,
@@ -106,6 +109,7 @@ impl<F: FnMut(&Status)> App<F> {
             view: self.engine.view(),
             volume: self.volume.clone(),
             obs: self.obs.state(),
+            plugins: self.plugins.state(),
         };
         if self.published.as_ref() != Some(&status) {
             (self.on_status)(&status);
@@ -145,6 +149,10 @@ impl<F: FnMut(&Status)> App<F> {
             }
             Action::Obs(request) => {
                 self.obs.run(request.clone());
+                Ok(())
+            }
+            Action::Plugin { id, action, params } => {
+                self.plugins.run(id, action, params);
                 Ok(())
             }
             Action::Sequence(steps) => {
@@ -370,6 +378,7 @@ impl<F: FnMut(&Status)> App<F> {
 pub fn run(
     path: PathBuf,
     device: Option<String>,
+    plugins: Arc<Plugins>,
     wake: Arc<AtomicBool>,
     on_status: impl FnMut(&Status),
 ) -> Result<()> {
@@ -381,6 +390,7 @@ pub fn run(
         renderer: Renderer::new(path.parent().unwrap_or(Path::new(".")).to_path_buf()),
         brightness: cfg.brightness,
         obs: Obs::start(cfg.obs.clone()),
+        plugins,
         engine: Engine::new(cfg),
         started: Instant::now(),
         path,

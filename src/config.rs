@@ -68,6 +68,13 @@ pub enum Action {
     Random(Vec<Action>),
     /// Sent to OBS Studio. Does nothing while OBS is not connected.
     Obs(ObsAction),
+    /// Sent to a plugin. One that is not installed does nothing, and the config still loads.
+    Plugin {
+        id: String,
+        action: String,
+        #[serde(default)]
+        params: BTreeMap<String, String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -778,6 +785,16 @@ mod tests {
         assert_eq!(cfg.default_profile(), 1);
         let marked = "[[profile]]\nname='a'\n[[profile.page]]\nname='p'\n[[profile]]\nname='b'\ndefault=true\nexe='x.exe'\n[[profile.page]]\nname='p'";
         assert_eq!(Config::parse(marked).unwrap().default_profile(), 1, "the mark beats having no conditions");
+    }
+
+    #[test]
+    fn plugin_actions_survive_a_save_without_the_plugin_installed() {
+        let text = "[[profile]]\nname='p'\n[[profile.page]]\nname='a'\n[profile.page.keys.0]\naction={plugin={id='gone',action='go',params={light='Desk'}}}\n[profile.page.keys.1]\naction={sequence=[{plugin={id='gone',action='go'}}]}";
+        let cfg = Config::parse(text).unwrap();
+        let back = Config::parse(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
+        let params = BTreeMap::from([("light".to_string(), "Desk".to_string())]);
+        let want = Action::Plugin { id: "gone".into(), action: "go".into(), params };
+        assert_eq!(back.profiles[0].pages[0].keys[&0].action, Some(want));
     }
 
     #[test]

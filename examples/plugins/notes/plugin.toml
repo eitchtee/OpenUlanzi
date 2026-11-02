@@ -1,0 +1,13 @@
+# Copy this folder into %APPDATA%\OpenUlanzi\plugins and restart OpenUlanzi.
+protocol = 1
+id = "example.notes"
+name = "Notes"
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "main.ps1"]
+
+[[action]]
+id = "write"
+name = "Write a note"
+icon = "ph:note-pencil-bold"
+fields = [
+  { key = "text", label = "Note", hint = "Added to notes.txt in the plugin's folder.", options = "notes" },
+]

@@ -3,6 +3,7 @@ use openulanzi::config::{Config, Model, Visual};
 use openulanzi::device;
 use openulanzi::runtime::{self, Status, VolumePopup};
 use openulanzi::platform;
+use openulanzi::plugin::{PluginState, Plugins};
 use openulanzi::render::{self, Renderer};
 use openulanzi::update::{self, Install, Update};
 use serde::Serialize;
@@ -29,6 +30,7 @@ struct Shared {
     renderer: Mutex<Renderer>,
     statuses: Mutex<HashMap<String, Status>>,
     update: Mutex<Option<Update>>,
+    plugins: Arc<Plugins>,
 }
 
 /// What the page needs to offer an update.
@@ -164,6 +166,17 @@ fn get_status(device: String, state: State<Shared>) -> Option<Status> {
     state.statuses.lock().unwrap().get(&device).cloned()
 }
 
+/// Status carries these too, but there is no status until a deck has been plugged in.
+#[tauri::command]
+fn get_plugins(state: State<Shared>) -> Vec<PluginState> {
+    state.plugins.state()
+}
+
+#[tauri::command]
+fn open_plugins_folder(state: State<Shared>) -> Result<(), String> {
+    platform::open(&state.dir.join("plugins").to_string_lossy()).map_err(|e| format!("{e:#}"))
+}
+
 #[tauri::command]
 fn render(visual: Visual, wide: bool, state: State<Shared>) -> Result<tauri::ipc::Response, String> {
     let mut renderer = state.renderer.lock().unwrap();
@@ -289,6 +302,7 @@ fn start_device(handle: &AppHandle, id: String, path: PathBuf, latest: Arc<Atomi
     let shared = handle.state::<Shared>();
     let wake = Arc::new(AtomicBool::new(false));
     shared.wakes.lock().unwrap().insert(id.clone(), wake.clone());
+    let plugins = shared.plugins.clone();
     let handle = handle.clone();
     std::thread::spawn(move || {
         let mut seen = 0;
@@ -301,7 +315,7 @@ fn start_device(handle: &AppHandle, id: String, path: PathBuf, latest: Arc<Atomi
             let _ = handle.emit("deck-status", status);
         };
         // An unreadable config is reported by get_config, where the user can see it.
-        if let Err(e) = runtime::run(path, Some(id), wake, on_status) {
+        if let Err(e) = runtime::run(path, Some(id), plugins, wake, on_status) {
             eprintln!("deck stopped: {e:#}");
         }
     });
@@ -355,13 +369,14 @@ fn main() {
             renderer: Mutex::new(Renderer::new(dir.clone())),
             statuses: Mutex::default(),
             update: Mutex::default(),
+            plugins: Arc::new(Plugins::load(&dir)),
             dir,
         })
         // Must be first: a second copy would fight over the deck.
         .plugin(tauri_plugin_single_instance::init(|app, _, _| show_main(app)))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--hidden"])))
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![app_version, check_update, install_update, open_release_notes, list_devices, forget_device, get_config, save_config, get_status, render, pick_file, icon_library, app_icon])
+        .invoke_handler(tauri::generate_handler![app_version, check_update, install_update, open_release_notes, list_devices, forget_device, get_config, save_config, get_status, get_plugins, open_plugins_folder, render, pick_file, icon_library, app_icon])
         .on_window_event(|window, event| {
             // Closing keeps the deck running; Quit in the tray ends it.
             if let (WindowEvent::CloseRequested { api, .. }, "main") = (event, window.label()) {
@@ -371,6 +386,7 @@ fn main() {
         })
         .setup(|app| {
             let handle = app.handle().clone();
+            handle.state::<Shared>().plugins.start(); // here: the single-instance check has passed
             build_tray(&handle)?;
             if let Some(popup) = app.get_webview_window("volume") {
                 place_popup(&popup)?;

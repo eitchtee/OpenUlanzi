@@ -102,7 +102,28 @@ const ACTION_GROUPS = [
     } },
   ]],
 ];
-const PALETTE = ACTION_GROUPS.flatMap(([, items]) => items);
+const BUILT_IN_GROUPS = ACTION_GROUPS.length;
+let PALETTE = ACTION_GROUPS.flatMap(([, items]) => items);
+
+/** Plugin groups follow the built-in ones, so palette positions of those never move. */
+function usePlugins(plugins) {
+  state.plugins = plugins;
+  ACTION_GROUPS.length = BUILT_IN_GROUPS;
+  for (const plugin of plugins.filter((p) => p.actions.length)) {
+    ACTION_GROUPS.push([plugin.name, plugin.actions.map((action) => ({
+      name: action.name,
+      icon: action.icon.replace(/^ph:/, '') || 'puzzle-piece-bold',
+      apply: (b) => {
+        const params = Object.fromEntries(action.fields.map((f) => [f.key, f.default]));
+        b.action = { plugin: { id: plugin.id, action: action.id, params } };
+        b.label ||= action.name;
+        if (action.icon) b.icon ||= action.icon;
+      },
+    }))]);
+    for (const action of plugin.actions) ACTION_NAMES[`plugin:${plugin.id}:${action.id}`] = `${plugin.name}: ${action.name}`;
+  }
+  PALETTE = ACTION_GROUPS.flatMap(([, items]) => items);
+}
 
 function obsAction(b, obs, label, glyph) {
   b.action = { obs };
@@ -118,7 +139,7 @@ function media(b, hotkey, label, icon) {
   b.icon ||= `ph:${icon}`;
 }
 
-const state = { device: '', devices: [], cfg: null, profile: 0, page: 0, selected: null, view: 'keys', status: null, icons: new Map(), collapsed: new Set(), clipboard: null, armed: null };
+const state = { device: '', devices: [], plugins: [], cfg: null, profile: 0, page: 0, selected: null, view: 'keys', status: null, icons: new Map(), collapsed: new Set(), clipboard: null, armed: null };
 const $ = (id) => document.getElementById(id);
 
 function remember(key, value) {
@@ -874,7 +895,7 @@ const ACTION_TYPES = [
 ];
 const DELAY_TYPE = ['delay', 'Wait'];
 const SHOW_TYPE = ['show', 'Show a page while held'];
-const actionType = (a) => (!a ? 'none' : typeof a === 'string' ? a : a.obs ? `obs_${actionType(a.obs)}` : Object.keys(a)[0]);
+const actionType = (a) => (!a ? 'none' : typeof a === 'string' ? a : a.obs ? `obs_${actionType(a.obs)}` : a.plugin ? `plugin:${a.plugin.id}:${a.plugin.action}` : Object.keys(a)[0]);
 
 const ACTION_NAMES = Object.fromEntries([...ACTION_TYPES, DELAY_TYPE, SHOW_TYPE]);
 
@@ -924,13 +945,21 @@ function browseButton(extensions, commit) {
   }, 'Browse');
 }
 
-let obsLists = 0;
+let nameLists = 0;
 
-/** Suggests the names OBS reports, but takes any text: OBS may be closed while editing. */
-function obsName(label, value, names, commit) {
-  const id = `obs-names-${++obsLists}`;
+/** Suggests the names reported by OBS or a plugin, but takes any text: it may be closed while editing. */
+function nameField(label, value, names, commit, hint) {
+  const id = `names-${++nameLists}`;
   const input = h('input', { type: 'text', value, list: id, onchange: () => commit(input.value) });
-  return h('div', {}, field(label, input), h('datalist', { id }, ...(names ?? []).map((name) => h('option', { value: name }))));
+  return h('div', {}, field(label, input, hint), h('datalist', { id }, ...(names ?? []).map((name) => h('option', { value: name }))));
+}
+
+function pluginFields(data, commit) {
+  const plugin = state.plugins.find((p) => p.id === data.id);
+  const action = plugin?.actions.find((a) => a.id === data.action);
+  if (!action) return [h('p', { class: 'hint' }, 'This plugin is not installed, so the action does nothing.')];
+  return action.fields.map((f) => nameField(f.label, data.params?.[f.key] ?? '', plugin.options[f.options],
+    (text) => commit({ ...data, params: { ...data.params, [f.key]: text } }), f.hint));
 }
 
 /** The fields of an OBS action, which is `{ obs: 'name' }` or `{ obs: { name: value } }`. */
@@ -940,24 +969,24 @@ function obsFields(kind, value, commit) {
   const sources = [...(obs?.scenes ?? []), ...(obs?.inputs ?? [])];
   const change = (key) => (text) => commit({ [kind]: { ...data, [key]: text } });
   if (kind === 'toggle_record_pause') return [h('p', { class: 'hint' }, 'OBS cannot pause while its recording quality is Same as stream.')];
-  const one = (label, names) => [obsName(label, data, names, (text) => commit({ [kind]: text }))];
+  const one = (label, names) => [nameField(label, data, names, (text) => commit({ [kind]: text }))];
   if (kind === 'scene') return one('Scene', obs?.scenes);
   if (kind === 'scene_collection') return one('Scene collection', obs?.collections);
   if (kind === 'profile') return one('Profile', obs?.profiles);
   if (kind === 'scene_transition') return one('Transition', obs?.transitions);
   if (kind === 'toggle_mute') return one('Input', obs?.inputs);
   if (kind === 'chapter') return [...one('Chapter name', []), h('p', { class: 'hint' }, 'Leave it empty to let OBS name it. Needs a Hybrid MP4 recording.')];
-  if (kind === 'toggle_source') return [obsName('Scene', data.scene, obs?.scenes, change('scene')), obsName('Source', data.source, obs?.items?.[data.scene], change('source'))];
-  if (kind === 'toggle_filter') return [obsName('Source', data.source, sources, change('source')), obsName('Filter', data.filter, obs?.filters?.[data.source], change('filter'))];
+  if (kind === 'toggle_source') return [nameField('Scene', data.scene, obs?.scenes, change('scene')), nameField('Source', data.source, obs?.items?.[data.scene], change('source'))];
+  if (kind === 'toggle_filter') return [nameField('Source', data.source, sources, change('source')), nameField('Filter', data.filter, obs?.filters?.[data.source], change('filter'))];
   if (kind === 'media') {
     const select = h('select', { onchange: () => change('action')(select.value) },
       ...[['play', 'Play'], ['pause', 'Pause'], ['stop', 'Stop'], ['restart', 'Restart'], ['next', 'Next'], ['previous', 'Previous']]
         .map(([id, text]) => h('option', { value: id, selected: id === data.action }, text)));
-    return [obsName('Input', data.input, obs?.inputs, change('input')), field('Action', select)];
+    return [nameField('Input', data.input, obs?.inputs, change('input')), field('Action', select)];
   }
   if (kind === 'volume') {
     const input = h('input', { type: 'number', value: data.db, min: -60, max: 60, onchange: () => commit({ volume: { ...data, db: Math.trunc(Number(input.value)) || 0 } }) });
-    return [obsName('Input', data.input, obs?.inputs, change('input')), field('Change by (dB)', input, 'Stops at 0 dB, so it never boosts the input.')];
+    return [nameField('Input', data.input, obs?.inputs, change('input')), field('Change by (dB)', input, 'Stops at 0 dB, so it never boosts the input.')];
   }
   return [];
 }
@@ -998,6 +1027,7 @@ function actionEditor(label, action, commit, options = {}) {
   const follow = action?.follow_app;
   if (follow) action = { profile: APP_LAYER };
   const type = actionType(action);
+  const typeName = ACTION_NAMES[type] ?? action?.plugin?.action ?? type;
   const parts = [];
   const take = (item) => {
     state.armed = null;
@@ -1005,9 +1035,9 @@ function actionEditor(label, action, commit, options = {}) {
   };
   const slot = h('div', { class: action ? 'slot filled' : 'slot' });
   if (action) {
-    slot.append(h('div', { class: 'slot-head' }, actionIcon(type), h('span', { class: 'slot-name' }, ACTION_NAMES[type] ?? type),
+    slot.append(h('div', { class: 'slot-head' }, actionIcon(type), h('span', { class: 'slot-name' }, typeName),
       ...(options.tools ?? []),
-      h('button', { type: 'button', class: 'slot-tool', title: 'Remove', 'aria-label': `Remove ${ACTION_NAMES[type] ?? type}`, onclick: () => commit(undefined) }, icon('x-bold'))));
+      h('button', { type: 'button', class: 'slot-tool', title: 'Remove', 'aria-label': `Remove ${typeName}`, onclick: () => commit(undefined) }, icon('x-bold'))));
   } else {
     slot.append(h('button', {
       type: 'button', class: 'slot-empty',
@@ -1082,6 +1112,8 @@ function actionEditor(label, action, commit, options = {}) {
     parts.push(listEditor(type, action, commit, false));
   } else if (type.startsWith('obs_')) {
     parts.push(...obsFields(type.slice(4), action.obs, (obs) => commit({ obs })));
+  } else if (action?.plugin) {
+    parts.push(...pluginFields(action.plugin, (plugin) => commit({ plugin })));
   }
   if (action?.profile === APP_LAYER && !shot) {
     const until = h('input', {
@@ -1409,6 +1441,17 @@ function obsSettings() {
     text('password', 'Server password', 'password', 'Kept as plain text in this deck\'s config file.'));
 }
 
+const pluginRows = () => (state.plugins.length
+  ? state.plugins.map((p) => h('p', { class: 'hint' }, `${p.name}: ${p.error || (p.running ? 'Running.' : 'Starting…')}`))
+  : [h('p', { class: 'hint' }, 'No plugins installed.')]);
+
+function pluginSettings() {
+  return section('Plugins',
+    h('div', { id: 'plugin-list' }, ...pluginRows()),
+    h('p', { class: 'hint' }, 'A plugin is a program that runs with your full permissions, so only add ones you trust. To add one, put its folder in the plugins folder, then quit from the tray and reopen OpenUlanzi.'),
+    h('button', { class: 'plain', onclick: () => invoke('open_plugins_folder').catch((e) => notify(String(e), true)) }, 'Open plugins folder'));
+}
+
 function drawSettingsView() {
   const cfg = state.cfg;
   const number = (key, label, min, max, hint) => {
@@ -1461,6 +1504,7 @@ function drawSettingsView() {
       color('color', 'Default icon colour'),
       color('background', 'Default key background')),
     obsSettings(),
+    pluginSettings(),
     updateSettings()));
 }
 
@@ -1545,6 +1589,11 @@ function drawStatus(status) {
     drawActions();
     if ($('obs-state')) $('obs-state').textContent = obsStateText();
   }
+  if (status && state.cfg && JSON.stringify(status.plugins) !== JSON.stringify(state.plugins)) {
+    usePlugins(status.plugins);
+    drawActions();
+    $('plugin-list')?.replaceChildren(...pluginRows());
+  }
   const connection = $('connection');
   if (!status?.connected) {
     $('live-deck').replaceChildren();
@@ -1583,6 +1632,7 @@ async function start() {
   const { listen } = window.__TAURI__.event;
   $('device').addEventListener('change', () => switchDevice($('device').value));
   state.version = await invoke('app_version');
+  usePlugins(await invoke('get_plugins'));
   await loadDevices();
   await switchDevice(firstDevice());
   if (state.cfg?.check_updates) checkForUpdate();
