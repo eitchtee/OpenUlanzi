@@ -4,6 +4,7 @@ use openulanzi::device;
 use openulanzi::runtime::{self, Status, VolumePopup};
 use openulanzi::platform;
 use openulanzi::render::{self, Renderer};
+use openulanzi::update::{self, Install, Update};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -17,6 +18,7 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_dialog::DialogExt;
 
 const POPUP_TIME: Duration = Duration::from_millis(1500);
+const UPDATE_WAIT: Duration = Duration::from_secs(15);
 const DEVICE_SCAN: Duration = Duration::from_secs(5);
 /// Height above the bottom of the screen, clear of the taskbar like the Windows flyout.
 const POPUP_MARGIN: f64 = 72.0;
@@ -26,6 +28,14 @@ struct Shared {
     wakes: Mutex<HashMap<String, Arc<AtomicBool>>>,
     renderer: Mutex<Renderer>,
     statuses: Mutex<HashMap<String, Status>>,
+    update: Mutex<Option<Update>>,
+}
+
+/// What the page needs to offer an update.
+#[derive(Serialize)]
+struct UpdateOffer {
+    version: String,
+    install: Install,
 }
 
 /// One entry per deck ever seen. The empty name is the starting config, used before any deck has
@@ -97,6 +107,40 @@ fn forget_device(device: String, state: State<Shared>) -> Result<(), String> {
     std::fs::remove_file(&path).map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(path.with_extension("toml.bak"));
     Ok(())
+}
+
+fn this_exe() -> Result<PathBuf, String> {
+    std::env::current_exe().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn app_version(app: AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+// async: these wait on the network, which must not block the window.
+#[tauri::command(async)]
+fn check_update(app: AppHandle, state: State<Shared>) -> Result<Option<UpdateOffer>, String> {
+    let current = app.package_info().version.to_string();
+    let found = update::check(&current).map_err(|e| format!("{e:#}"))?;
+    let offer = found.as_ref().map(|u| u.version.clone());
+    *state.update.lock().unwrap() = found;
+    let install = update::install_kind(&this_exe()?);
+    Ok(offer.map(|version| UpdateOffer { version, install }))
+}
+
+#[tauri::command(async)]
+fn install_update(app: AppHandle, state: State<Shared>) -> Result<(), String> {
+    let found = state.update.lock().unwrap().clone().ok_or("no update to install")?;
+    update::install(&found, &this_exe()?).map_err(|e| format!("{e:#}"))?;
+    app.exit(0); // the installer or new copy is waiting for this one to go
+    Ok(())
+}
+
+#[tauri::command]
+fn open_release_notes(state: State<Shared>) -> Result<(), String> {
+    let found = state.update.lock().unwrap().clone().ok_or("no update to show")?;
+    platform::open(&found.notes_url).map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
@@ -290,7 +334,19 @@ fn watch_devices(handle: AppHandle) {
     }
 }
 
+/// A portable update starts the new exe while the old one is closing.
+fn finish_update() {
+    let mut args = std::env::args().skip_while(|a| a != "--after-update").skip(1);
+    if let Some(pid) = args.next().and_then(|p| p.parse().ok()) {
+        platform::wait_for_exit(pid, UPDATE_WAIT);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        update::clean_up(&exe);
+    }
+}
+
 fn main() {
+    finish_update();
     let dir = config_dir().expect("cannot create the OpenUlanzi config folder");
     tauri::Builder::default()
         // Here, not in setup: windows exist and start calling commands before setup runs.
@@ -298,13 +354,14 @@ fn main() {
             wakes: Mutex::default(),
             renderer: Mutex::new(Renderer::new(dir.clone())),
             statuses: Mutex::default(),
+            update: Mutex::default(),
             dir,
         })
         // Must be first: a second copy would fight over the deck.
         .plugin(tauri_plugin_single_instance::init(|app, _, _| show_main(app)))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--hidden"])))
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![list_devices, forget_device, get_config, save_config, get_status, render, pick_file, icon_library, app_icon])
+        .invoke_handler(tauri::generate_handler![app_version, check_update, install_update, open_release_notes, list_devices, forget_device, get_config, save_config, get_status, render, pick_file, icon_library, app_icon])
         .on_window_event(|window, event| {
             // Closing keeps the deck running; Quit in the tray ends it.
             if let (WindowEvent::CloseRequested { api, .. }, "main") = (event, window.label()) {

@@ -29,7 +29,7 @@ use windows::Win32::Media::Multimedia::mciSendStringW;
 use windows::Win32::System::StationsAndDesktops::{CloseDesktop, OpenInputDesktop, DESKTOP_CONTROL_FLAGS, DESKTOP_SWITCHDESKTOP};
 use windows::Win32::System::SystemInformation::{GetLocalTime, GetTickCount, GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows::Win32::System::Threading::{
-    GetSystemTimes, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetSystemTimes, OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject, PROCESS_SYNCHRONIZE, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::Shell::{SHDefExtractIconW, ShellExecuteW};
@@ -357,6 +357,17 @@ impl Stats {
         let (idle_delta, total_delta) = (idle - self.idle, (total - self.total).max(1));
         (self.idle, self.total) = (idle, total);
         (100 - (idle_delta * 100 / total_delta).min(100) as u8, memory.dwMemoryLoad as u8)
+    }
+}
+
+/// Waits for a process to exit, up to `limit`. An update uses this so its old copy lets go of the
+/// deck and the single-instance lock first.
+pub fn wait_for_exit(pid: u32, limit: Duration) {
+    if let Ok(process) = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) } {
+        unsafe {
+            WaitForSingleObject(process, limit.as_millis() as u32);
+            let _ = CloseHandle(process);
+        }
     }
 }
 

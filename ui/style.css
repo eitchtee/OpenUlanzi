@@ -69,6 +69,11 @@ body.no-panels { grid-template-columns: 232px minmax(0, 1fr); }
 .profile small { display: block; overflow: hidden; color: var(--ink-soft); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .profile.over { outline: 2px dashed var(--ink); outline-offset: -2px; }
 .view { display: flex; gap: 8px; align-items: center; }
+.update { display: flex; flex-direction: column; gap: 6px; margin: 8px; padding: 10px; border-radius: var(--radius-m); background: var(--signal); }
+.update[hidden] { display: none; }
+.update p { font-weight: 600; }
+.update .link { padding: 0; color: var(--ink); text-align: left; text-decoration: underline; }
+.sheet-section { margin: 20px 0 4px; font-size: 16px; font-weight: 600; }
 .views { padding: 8px; border-top: 1px solid var(--line); }
 .profile[aria-current="true"], .view[aria-current="true"] { background: var(--ink); color: var(--paper); }
 .profile[aria-current="true"] small { color: inherit; opacity: .7; }

@@ -1241,6 +1241,57 @@ function forgetButton() {
   }, 'Forget this deck');
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function drawUpdate() {
+  const offer = state.update;
+  const root = $('update');
+  root.hidden = !offer;
+  if (!offer) return root.replaceChildren();
+  const notes = h('button', { class: 'link', onclick: () => invoke('open_release_notes') }, "What's new");
+  if (offer.install === 'dev') {
+    return root.replaceChildren(h('p', {}, `Version ${offer.version} is out`), notes);
+  }
+  const install = h('button', {
+    class: 'plain primary',
+    onclick: async () => {
+      install.disabled = true;
+      install.textContent = 'Updating';
+      await flushSave();
+      try {
+        await invoke('install_update');
+      } catch (e) {
+        install.disabled = false;
+        install.textContent = 'Update and restart';
+        notify(`Update failed: ${e}`, true);
+      }
+    },
+  }, 'Update and restart');
+  root.replaceChildren(h('p', {}, `Version ${offer.version} is ready`), install, notes);
+}
+
+async function checkForUpdate(manual = false) {
+  try {
+    state.update = await invoke('check_update');
+    drawUpdate();
+    if (manual) notify(state.update ? `Version ${state.update.version} is available.` : 'You have the latest version.');
+  } catch (e) {
+    if (manual) notify(`Could not check for updates: ${e}`, true);
+  }
+}
+
+function updateSettings() {
+  return [
+    h('h2', { class: 'sheet-section' }, 'Updates'),
+    h('p', { class: 'hint' }, `Version ${state.version}`),
+    (() => {
+      const input = h('input', { type: 'checkbox', checked: state.cfg.check_updates, onchange: () => { state.cfg.check_updates = input.checked; save(); } });
+      return h('label', { class: 'check' }, input, 'Check GitHub for new versions');
+    })(),
+    h('button', { class: 'plain', onclick: () => checkForUpdate(true) }, 'Check now'),
+  ];
+}
+
 function drawSettingsView() {
   const cfg = state.cfg;
   const number = (key, label, min, max, hint) => {
@@ -1285,6 +1336,7 @@ function drawSettingsView() {
     field('Weekday', weekday),
     color('color', 'Default icon colour'),
     color('background', 'Default key background'),
+    ...updateSettings(),
     forgetButton()));
 }
 
@@ -1400,8 +1452,11 @@ async function start() {
   state.collapsed = new Set(JSON.parse(recall('collapsed') ?? '[]'));
   const { listen } = window.__TAURI__.event;
   $('device').addEventListener('change', () => switchDevice($('device').value));
+  state.version = await invoke('app_version');
   await loadDevices();
   await switchDevice(firstDevice());
+  if (state.cfg?.check_updates) checkForUpdate();
+  setInterval(() => { if (state.cfg?.check_updates) checkForUpdate(); }, DAY_MS);
   listen('deck-status', ({ payload }) => {
     const known = state.devices.find((d) => d.id === payload.device);
     if (known && known.connected !== payload.connected) {
