@@ -1,0 +1,5 @@
+/* Mini deck: same 5x3 grid as the hardware, wide key spanning the last two cells. */
+.mini-deck { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5px; }
+.mini-key { aspect-ratio: 1; border-radius: 5px; background: #0d0e10; overflow: hidden; }
+.mini-key.wide { grid-column: span 2; aspect-ratio: auto; }
+.mini-key img { display: block; width: 100%; height: 100%; }

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OpenUlanzi volume</title>
+<style>
+  /* Follows the Windows 11 volume flyout: one rounded bar with an icon, a track and the number. */
+  :root { --plate: #2c2c2c; --edge: #454545; --text: #fff; --track: #8a8a8a; --fill: #4cc2ff; }
+  @media (prefers-color-scheme: light) {
+    :root { --plate: #f3f3f3; --edge: #d5d5d5; --text: #1a1a1a; --track: #8a8a8a; --fill: #005fb8; }
+  }
+  html, body { height: 100%; margin: 0; overflow: hidden; background: transparent; }
+  .plate {
+    box-sizing: border-box; display: flex; align-items: center; gap: 14px; height: 100%; padding: 0 18px;
+    border: 1px solid var(--edge); border-radius: 8px; background: var(--plate); color: var(--text);
+    font: 400 15px "Segoe UI Variable", "Segoe UI", sans-serif;
+  }
+  img { flex: none; width: 26px; height: 26px; }
+  img[hidden] { display: none; }
+  .track { flex: 1; height: 4px; border-radius: 2px; background: var(--track); overflow: hidden; }
+  .fill { height: 100%; border-radius: 2px; background: var(--fill); }
+  .value { flex: none; min-width: 30px; text-align: right; font-variant-numeric: tabular-nums; }
+  .note { flex: 1; }
+  [hidden] { display: none; }
+</style>
+</head>
+<body>
+<div class="plate">
+  <img id="icon" alt="" hidden>
+  <div id="track" class="track"><div id="fill" class="fill"></div></div>
+  <span id="value" class="value"></span>
+  <span id="note" class="note" hidden>No audio from this app yet</span>
+</div>
+<script>
+  const { invoke } = window.__TAURI__.core;
+  const $ = (id) => document.getElementById(id);
+  const icons = new Map();
+
+  async function iconFor(exe) {
+    if (!icons.has(exe)) {
+      const bytes = await invoke('app_icon', { exe }).catch(() => null);
+      icons.set(exe, bytes ? URL.createObjectURL(new Blob([bytes], { type: 'image/png' })) : null);
+    }
+    return icons.get(exe);
+  }
+
+  window.__TAURI__.event.listen('volume', async ({ payload }) => {
+    const known = payload.level !== null;
+    $('track').hidden = $('value').hidden = !known;
+    $('note').hidden = known;
+    if (known) {
+      $('fill').style.width = `${payload.level}%`;
+      $('value').textContent = payload.level;
+    }
+    const url = await iconFor(payload.exe);
+    $('icon').hidden = !url;
+    if (url) $('icon').src = url;
+  });
+</script>
+</body>
+</html>

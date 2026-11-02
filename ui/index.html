@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OpenUlanzi</title>
+<link rel="stylesheet" href="deck.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<aside class="rail">
+  <section class="live" aria-label="Deck right now">
+    <select id="device" class="device" aria-label="Deck" hidden></select>
+    <p id="connection" class="connection"></p>
+    <div id="live-deck" class="mini-deck"></div>
+    <p id="showing" class="showing"></p>
+  </section>
+  <section id="profiles" class="pages" aria-label="Profiles"></section>
+  <nav class="views" aria-label="Sections">
+    <button data-view="settings" class="view">Settings</button>
+  </nav>
+</aside>
+<main id="stage" class="stage"></main>
+<aside id="inspector" class="inspector" aria-label="Selected control"></aside>
+<aside id="actions" class="actions" aria-label="Actions"></aside>
+<p id="notice" class="notice" role="status" hidden></p>
+<dialog id="dialog" class="dialog"></dialog>
+<script src="deck.js"></script>
+<script src="keyboard.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
