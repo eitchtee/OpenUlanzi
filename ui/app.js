@@ -992,8 +992,9 @@ function obsFields(kind, value, commit) {
 }
 
 function listEditor(key, action, commit, inSequence) {
-  const list = action[key];
-  const update = (next, quiet) => commit({ [key]: next }, quiet);
+  let list = action[key];
+  // Typing commits quietly, without a redraw, so later edits must start from the latest list.
+  const update = (next, quiet) => { list = next; commit({ [key]: next }, quiet); };
   const move = (from, to) => {
     const next = [...list];
     next.splice(to, 0, next.splice(from, 1)[0]);
