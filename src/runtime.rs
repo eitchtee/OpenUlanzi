@@ -80,9 +80,20 @@ struct App<F> {
     in_flight: Option<Instant>,
     /// The wide screen needs its small-window command once that bundle lands.
     wide_due: bool,
-    wide_date: String,
+    wide_shown: String,
     last_stats: Instant,
     stats: platform::Stats,
+}
+
+/// What the wide face shows of `now`; when it changes, the face is due again. The digital faces
+/// only draw the time they were sent, while the dial keeps its own and blinks when re-sent.
+fn shown(display: Display, now: &platform::Now) -> String {
+    match display {
+        Display::Time | Display::TimeDate | Display::TimeWeekday | Display::DateTimeWeekday => {
+            format!("{} {}", now.date, &now.time[..5])
+        }
+        _ => now.date.clone(),
+    }
 }
 
 fn modified(path: &Path) -> Option<SystemTime> {
@@ -247,7 +258,7 @@ impl<F: FnMut(&Status)> App<F> {
         };
         let (cpu, ram) = self.stats.sample();
         let twelve = self.engine.cfg.twelve_hour;
-        self.wide_date = now.date;
+        self.wide_shown = shown(display, &now);
         self.last_stats = Instant::now();
         deck.command(CMD_SMALL_WINDOW, &protocol::small_window(display.mode(), cpu, ram, &now.time, twelve, &suffix))
     }
@@ -295,7 +306,7 @@ impl<F: FnMut(&Status)> App<F> {
             *painted = self.takeover(deck)?;
         }
         let stale_stats = self.wide == Some(Display::Stats) && self.last_stats.elapsed() >= STATS_REFRESH;
-        if stale_stats || (self.wide.is_some() && self.clock().date != self.wide_date) {
+        if stale_stats || self.wide.is_some_and(|d| shown(d, &self.clock()) != self.wide_shown) {
             self.send_wide(deck)?;
         }
         if deck.last_write.elapsed() >= KEEP_ALIVE {
@@ -415,7 +426,7 @@ pub fn run(
         wide: None,
         in_flight: None,
         wide_due: false,
-        wide_date: String::new(),
+        wide_shown: String::new(),
         last_stats: Instant::now(),
         stats: platform::Stats::default(),
     };
@@ -439,5 +450,21 @@ pub fn run(
         app.reload_if_changed();
         app.publish(false);
         std::thread::sleep(Duration::from_secs(2));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn digital_faces_are_due_each_minute_and_the_dial_each_day() {
+        let at = |time: &str, date: &str| platform::Now { time: time.into(), date: date.into(), weekday: String::new() };
+        let digital = |a, b| shown(Display::TimeDate, &a) != shown(Display::TimeDate, &b);
+        let dial = |a, b| shown(Display::Dial, &a) != shown(Display::Dial, &b);
+        assert!(!digital(at("10:00:01", "d1"), at("10:00:59", "d1")));
+        assert!(digital(at("10:00:59", "d1"), at("10:01:00", "d1")));
+        assert!(!dial(at("10:00:59", "d1"), at("10:01:00", "d1")));
+        assert!(dial(at("23:59:59", "d1"), at("00:00:00", "d2")));
     }
 }
