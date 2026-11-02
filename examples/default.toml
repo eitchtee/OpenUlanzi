@@ -14,6 +14,13 @@
 #        | { one_shot = { page = "name" } } returns after the next button press; also takes profile
 #        | { scroll_up = 3 } | { scroll_down = 3 } | { scroll_left = 3 } | { scroll_right = 3 }
 #        | { sequence = [..., { delay = 100 }, ...] } | { toggle = [...] } | { random = [...] }
+#        | { obs = "toggle_record" }, also "toggle_record_pause", "toggle_stream", "toggle_virtual_cam",
+#          "toggle_replay_buffer", "save_replay", "toggle_studio_mode", "transition", "screenshot"
+#        | { obs = { scene = "name" } }, also scene_collection, profile, scene_transition, toggle_mute, chapter
+#        | { obs = { toggle_source = { scene = "name", source = "name" } } }
+#        | { obs = { toggle_filter = { source = "name", filter = "name" } } }
+#        | { obs = { media = { input = "name", action = "play" } } } also pause, stop, restart, next, previous
+#        | { obs = { volume = { input = "name", db = -2 } } }
 #
 # `hold` runs an action once the key has been held for hold_ms, drawing a border as it goes,
 # and letting go early cancels it. hold = { show = "page" } instead keeps a page up until
@@ -35,6 +42,12 @@ wide = "time"  # dial, time, time_weekday, time_date, date_time_weekday, stats, 
 twelve_hour = false
 date_format = ""  # Windows picture like dd/MM/yyyy; empty is the system short date
 weekday_format = "ddd"  # ddd is short, dddd is full, in the Windows language
+
+# OBS Studio, from Tools > WebSocket Server Settings. The password is stored as plain text.
+# [obs]
+# host = "127.0.0.1"
+# port = 4455
+# password = ""
 
 # Set default = true on a profile to make it the default; otherwise it is the first without conditions.
 # { profile = "@app" } goes to the focused app's profile, { profile = "@default" } to the default.

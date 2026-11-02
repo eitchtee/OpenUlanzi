@@ -2,6 +2,7 @@
 use crate::config::{Action, Config, Display, Visual};
 use crate::device::Deck;
 use crate::engine::Engine;
+use crate::obs::{Obs, ObsState};
 use crate::protocol::{self, CMD_BRIGHTNESS, CMD_LOCK, CMD_SMALL_WINDOW, CMD_UNLOCK, WIDE};
 use crate::{platform, render::Renderer};
 use anyhow::Result;
@@ -37,6 +38,7 @@ pub struct Status {
     pub layers: Vec<String>,
     pub view: Vec<(u8, Visual)>,
     pub volume: Option<VolumePopup>,
+    pub obs: ObsState,
 }
 
 /// The latest app volume change, for the on-screen popup.
@@ -68,6 +70,7 @@ struct App<F> {
     published: Option<Status>,
     steps: (Sender<Action>, Receiver<Action>),
     volume: Option<VolumePopup>,
+    obs: Obs,
     wide: Option<Display>,
     /// A bundle the firmware may still be unpacking.
     in_flight: Option<Instant>,
@@ -102,6 +105,7 @@ impl<F: FnMut(&Status)> App<F> {
             layers: self.engine.active_layers(),
             view: self.engine.view(),
             volume: self.volume.clone(),
+            obs: self.obs.state(),
         };
         if self.published.as_ref() != Some(&status) {
             (self.on_status)(&status);
@@ -137,6 +141,10 @@ impl<F: FnMut(&Status)> App<F> {
             Action::PlaySound(path) => platform::play_sound(path),
             Action::StopSound => {
                 platform::stop_sound();
+                Ok(())
+            }
+            Action::Obs(request) => {
+                self.obs.run(request.clone());
                 Ok(())
             }
             Action::Sequence(steps) => {
@@ -238,6 +246,9 @@ impl<F: FnMut(&Status)> App<F> {
                 // Only a changed setting applies, so saving anything else keeps what the knobs set.
                 if cfg.brightness != self.engine.cfg.brightness {
                     self.brightness = cfg.brightness;
+                }
+                if cfg.obs != self.engine.cfg.obs {
+                    self.obs.configure(cfg.obs.clone());
                 }
                 self.engine.reload(cfg);
                 println!("config reloaded");
@@ -369,6 +380,7 @@ pub fn run(
         modified: modified(&path),
         renderer: Renderer::new(path.parent().unwrap_or(Path::new(".")).to_path_buf()),
         brightness: cfg.brightness,
+        obs: Obs::start(cfg.obs.clone()),
         engine: Engine::new(cfg),
         started: Instant::now(),
         path,

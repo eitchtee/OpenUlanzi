@@ -1,6 +1,7 @@
 pub mod config;
 pub mod device;
 pub mod engine;
+pub mod obs;
 pub mod platform;
 pub mod protocol;
 pub mod render;

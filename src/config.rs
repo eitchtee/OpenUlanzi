@@ -66,6 +66,49 @@ pub enum Action {
     Toggle(Vec<Action>),
     /// Each press runs one action picked at random.
     Random(Vec<Action>),
+    /// Sent to OBS Studio. Does nothing while OBS is not connected.
+    Obs(ObsAction),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaAction {
+    Play,
+    Pause,
+    Stop,
+    Restart,
+    Next,
+    Previous,
+}
+
+/// Names are the ones shown in OBS.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum ObsAction {
+    ToggleRecord,
+    ToggleRecordPause,
+    ToggleStream,
+    ToggleVirtualCam,
+    ToggleReplayBuffer,
+    SaveReplay,
+    ToggleStudioMode,
+    /// Sends the preview to program in studio mode.
+    Transition,
+    /// Saves what is on air next to the recordings.
+    Screenshot,
+    /// Marks a chapter in the recording. Empty lets OBS name it.
+    Chapter(String),
+    Scene(String),
+    SceneCollection(String),
+    Profile(String),
+    /// Which transition scene changes use.
+    SceneTransition(String),
+    ToggleSource { scene: String, source: String },
+    ToggleFilter { source: String, filter: String },
+    Media { input: String, action: MediaAction },
+    ToggleMute(String),
+    /// Relative change in dB.
+    Volume { input: String, db: i32 },
 }
 
 /// What a screen shows. Everything but `image` and `page_indicator` is drawn by the firmware,
@@ -240,6 +283,21 @@ fn default_background() -> String {
     "#17181c".into()
 }
 
+/// Where OBS's WebSocket server listens. OBS shows these under Tools, WebSocket Server Settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ObsSettings {
+    pub host: String,
+    pub port: u16,
+    pub password: String,
+}
+
+impl Default for ObsSettings {
+    fn default() -> Self {
+        Self { host: "127.0.0.1".into(), port: 4455, password: String::new() }
+    }
+}
+
 /// USB cannot tell these apart, so the owner picks one. It only decides what the editor offers.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -301,6 +359,8 @@ pub struct Config {
     pub color: String,
     #[serde(default = "default_background")]
     pub background: String,
+    #[serde(default)]
+    pub obs: ObsSettings,
     #[serde(default, rename = "profile")]
     pub profiles: Vec<Profile>,
     #[serde(default, rename = "page", skip_serializing)]
@@ -650,6 +710,36 @@ mod tests {
         assert!(Config::parse(&toml::to_string_pretty(&cfg).unwrap()).is_ok());
         let bad = "[[profile]]\nname='p'\n[[profile.page]]\nname='a'\n[profile.page.keys.0]\naction={toggle=[{profile='nope'}]}";
         assert!(Config::parse(bad).is_err());
+    }
+
+    #[test]
+    fn obs_actions_and_settings_are_saved() {
+        let text = r#"
+            [obs]
+            port = 4456
+            password = "secret"
+            [[profile]]
+            name = "p"
+            [[profile.page]]
+            name = "a"
+            [profile.page.keys.0]
+            action = { obs = "toggle_record" }
+            [profile.page.keys.1]
+            action = { obs = { scene = "Main" } }
+            [profile.page.keys.2]
+            action = { obs = { media = { input = "Clip", action = "restart" } } }
+            [profile.page.keys.knob1]
+            left = { obs = { volume = { input = "Mic", db = -2 } } }
+        "#;
+        let cfg = Config::parse(text).unwrap();
+        assert_eq!(cfg.obs, ObsSettings { host: "127.0.0.1".into(), port: 4456, password: "secret".into() });
+        let back = Config::parse(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
+        assert_eq!(back.obs, cfg.obs);
+        let keys = &back.profiles[0].pages[0].keys;
+        assert_eq!(keys[&0].action, Some(Action::Obs(ObsAction::ToggleRecord)));
+        assert_eq!(keys[&1].action, Some(Action::Obs(ObsAction::Scene("Main".into()))));
+        assert_eq!(keys[&2].action, Some(Action::Obs(ObsAction::Media { input: "Clip".into(), action: MediaAction::Restart })));
+        assert_eq!(keys[&17].left, Some(Action::Obs(ObsAction::Volume { input: "Mic".into(), db: -2 })));
     }
 
     #[test]
