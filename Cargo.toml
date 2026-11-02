@@ -1,0 +1,23 @@
+[package]
+name = "openulanzi"
+version = "0.1.0"
+edition = "2024"
+description = "Open configurator for Ulanzi stream decks"
+license = "MIT"
+repository = "https://github.com/eitchtee/OpenUlanzi"
+
+[dependencies]
+anyhow = "1.0.104"
+hidapi = { version = "2.6.7", default-features = false, features = ["windows-native"] }
+regex = "1.13.1"
+resvg = "0.49.0"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.8"
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_System_Threading", "Win32_System_StationsAndDesktops", "Win32_System_SystemInformation", "Win32_Media_Multimedia", "Win32_Media_Audio", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_Graphics_Gdi", "Win32_Globalization", "Win32_Devices_DeviceAndDriverInstallation", "Win32_Devices_HumanInterfaceDevice", "Win32_Storage_FileSystem", "Win32_Security"] }
+zip = { version = "9.2.1", default-features = false, features = ["deflate"] }
+
+[workspace]
+members = ["app"]
+
+[dev-dependencies]
+serde_json = "1.0.154"
