@@ -72,8 +72,45 @@ const ACTION_GROUPS = [
     { name: 'Play sound file', icon: 'music-note-bold', apply: (b) => { b.action = { play_sound: '' }; } },
     { name: 'Stop sound', icon: 'stop-bold', apply: (b) => { b.action = 'stop_sound'; } },
   ]],
+  // Offered only while OBS is connected, because that is when the names can be picked.
+  ['OBS Studio', [
+    { name: 'Record', icon: 'record-bold', obs: true, apply: (b) => obsAction(b, 'toggle_record', 'Record', 'record-fill') },
+    { name: 'Pause recording', icon: 'pause-bold', obs: true, apply: (b) => obsAction(b, 'toggle_record_pause', 'Pause', 'pause-fill') },
+    { name: 'Stream', icon: 'broadcast-bold', obs: true, apply: (b) => obsAction(b, 'toggle_stream', 'Stream', 'broadcast-fill') },
+    { name: 'Virtual camera', icon: 'webcam-bold', obs: true, apply: (b) => obsAction(b, 'toggle_virtual_cam', 'Virtual cam', 'webcam-fill') },
+    { name: 'Replay buffer', icon: 'repeat-bold', obs: true, apply: (b) => obsAction(b, 'toggle_replay_buffer', 'Replay', 'repeat-fill') },
+    { name: 'Save replay', icon: 'floppy-disk-bold', obs: true, apply: (b) => obsAction(b, 'save_replay', 'Save replay', 'floppy-disk-fill') },
+    { name: 'Studio mode', icon: 'monitor-play-bold', obs: true, apply: (b) => obsAction(b, 'toggle_studio_mode', 'Studio', 'monitor-play-fill') },
+    { name: 'Transition', icon: 'arrows-left-right-bold', obs: true, apply: (b) => obsAction(b, 'transition', 'Transition', 'arrows-left-right-fill') },
+    { name: 'Scene transition effect', icon: 'swap-bold', obs: true, apply: (b) => obsAction(b, { scene_transition: obsFirst('transitions') }, 'Effect', 'swap-fill') },
+    { name: 'Screenshot', icon: 'camera-bold', obs: true, apply: (b) => obsAction(b, 'screenshot', 'Screenshot', 'camera-fill') },
+    { name: 'Scene collection', icon: 'stack-bold', obs: true, apply: (b) => obsAction(b, { scene_collection: obsFirst('collections') }, 'Collection', 'stack-fill') },
+    { name: 'Profile', icon: 'user-circle-bold', obs: true, apply: (b) => obsAction(b, { profile: obsFirst('profiles') }, 'Profile', 'user-circle-fill') },
+    { name: 'Scene', icon: 'monitor-bold', obs: true, apply: (b) => obsAction(b, { scene: obsFirst('scenes') }, 'Scene', 'monitor-fill') },
+    { name: 'Source visibility', icon: 'eye-bold', obs: true, apply: (b) => obsAction(b, { toggle_source: { scene: obsFirst('scenes'), source: '' } }, 'Source', 'eye-fill') },
+    { name: 'Chapter marker', icon: 'bookmark-simple-bold', obs: true, apply: (b) => obsAction(b, { chapter: '' }, 'Chapter', 'bookmark-simple-fill') },
+    { name: 'Filter', icon: 'funnel-bold', obs: true, apply: (b) => obsAction(b, { toggle_filter: { source: obsFirst('scenes'), filter: '' } }, 'Filter', 'funnel-fill') },
+    { name: 'Media source control', icon: 'play-circle-bold', obs: true, apply: (b) => obsAction(b, { media: { input: obsFirst('inputs'), action: 'play' } }, 'Media', 'play-circle-fill') },
+    { name: 'Mute input', icon: 'microphone-slash-bold', obs: true, apply: (b) => obsAction(b, { toggle_mute: obsFirst('inputs') }, 'Mute', 'microphone-slash-fill') },
+    { name: 'Input volume', icon: 'sliders-horizontal-bold', obs: true, apply: (b) => obsAction(b, { volume: { input: obsFirst('inputs'), db: 2 } }, 'Volume', 'sliders-horizontal-fill') },
+    { name: 'Mixer knob', icon: 'sliders-horizontal-bold', obs: true, knob: true, apply: (b) => {
+      const input = obsFirst('inputs');
+      b.left = { obs: { volume: { input, db: -2 } } };
+      b.right = { obs: { volume: { input, db: 2 } } };
+      b.action = { obs: { toggle_mute: input } };
+      b.label ||= 'Mixer';
+    } },
+  ]],
 ];
 const PALETTE = ACTION_GROUPS.flatMap(([, items]) => items);
+
+function obsAction(b, obs, label, glyph) {
+  b.action = { obs };
+  b.label ||= label;
+  b.icon ||= `ph:${glyph}`;
+}
+
+const obsFirst = (list) => state.status?.obs?.[list]?.[0] ?? '';
 
 function media(b, hotkey, label, icon) {
   b.action = { hotkey };
@@ -675,6 +712,7 @@ function drawActions() {
     const rows = items.map((item) => {
       const position = index++;
       if (item.knob && !hasDials()) return null;
+      if (item.obs && !state.status?.obs?.connected) return null;
       const row = h('button', {
         class: item.hold ? 'action hold' : 'action',
         draggable: true,
@@ -827,10 +865,16 @@ const ACTION_TYPES = [
   ['scroll_up', 'Scroll up'], ['scroll_down', 'Scroll down'], ['scroll_left', 'Scroll left'], ['scroll_right', 'Scroll right'],
   ['brightness', 'Change deck brightness'], ['app_volume', 'Change app volume'], ['app_volume_reset', 'Reset app volume'], ['play_sound', 'Play sound file'], ['stop_sound', 'Stop sound'],
   ['sequence', 'Sequence'], ['toggle', 'Toggle between actions'], ['random', 'Random action'],
+  ['obs_toggle_record', 'OBS: Record'], ['obs_toggle_record_pause', 'OBS: Pause recording'], ['obs_toggle_stream', 'OBS: Stream'],
+  ['obs_toggle_virtual_cam', 'OBS: Virtual camera'], ['obs_toggle_replay_buffer', 'OBS: Replay buffer'], ['obs_save_replay', 'OBS: Save replay'],
+  ['obs_toggle_studio_mode', 'OBS: Studio mode'], ['obs_transition', 'OBS: Transition'], ['obs_scene_transition', 'OBS: Scene transition effect'],
+  ['obs_screenshot', 'OBS: Screenshot'], ['obs_scene_collection', 'OBS: Scene collection'], ['obs_profile', 'OBS: Profile'], ['obs_scene', 'OBS: Scene'],
+  ['obs_toggle_source', 'OBS: Source visibility'], ['obs_chapter', 'OBS: Chapter marker'], ['obs_toggle_filter', 'OBS: Filter'],
+  ['obs_media', 'OBS: Media source control'], ['obs_toggle_mute', 'OBS: Mute input'], ['obs_volume', 'OBS: Input volume'],
 ];
 const DELAY_TYPE = ['delay', 'Wait'];
 const SHOW_TYPE = ['show', 'Show a page while held'];
-const actionType = (a) => (!a ? 'none' : typeof a === 'string' ? a : Object.keys(a)[0]);
+const actionType = (a) => (!a ? 'none' : typeof a === 'string' ? a : a.obs ? `obs_${actionType(a.obs)}` : Object.keys(a)[0]);
 
 const ACTION_NAMES = Object.fromEntries([...ACTION_TYPES, DELAY_TYPE, SHOW_TYPE]);
 
@@ -878,6 +922,44 @@ function browseButton(extensions, commit) {
       if (path) commit(path);
     },
   }, 'Browse');
+}
+
+let obsLists = 0;
+
+/** Suggests the names OBS reports, but takes any text: OBS may be closed while editing. */
+function obsName(label, value, names, commit) {
+  const id = `obs-names-${++obsLists}`;
+  const input = h('input', { type: 'text', value, list: id, onchange: () => commit(input.value) });
+  return h('div', {}, field(label, input), h('datalist', { id }, ...(names ?? []).map((name) => h('option', { value: name }))));
+}
+
+/** The fields of an OBS action, which is `{ obs: 'name' }` or `{ obs: { name: value } }`. */
+function obsFields(kind, value, commit) {
+  const obs = state.status?.obs;
+  const data = value[kind];
+  const sources = [...(obs?.scenes ?? []), ...(obs?.inputs ?? [])];
+  const change = (key) => (text) => commit({ [kind]: { ...data, [key]: text } });
+  if (kind === 'toggle_record_pause') return [h('p', { class: 'hint' }, 'OBS cannot pause while its recording quality is Same as stream.')];
+  const one = (label, names) => [obsName(label, data, names, (text) => commit({ [kind]: text }))];
+  if (kind === 'scene') return one('Scene', obs?.scenes);
+  if (kind === 'scene_collection') return one('Scene collection', obs?.collections);
+  if (kind === 'profile') return one('Profile', obs?.profiles);
+  if (kind === 'scene_transition') return one('Transition', obs?.transitions);
+  if (kind === 'toggle_mute') return one('Input', obs?.inputs);
+  if (kind === 'chapter') return [...one('Chapter name', []), h('p', { class: 'hint' }, 'Leave it empty to let OBS name it. Needs a Hybrid MP4 recording.')];
+  if (kind === 'toggle_source') return [obsName('Scene', data.scene, obs?.scenes, change('scene')), obsName('Source', data.source, obs?.items?.[data.scene], change('source'))];
+  if (kind === 'toggle_filter') return [obsName('Source', data.source, sources, change('source')), obsName('Filter', data.filter, obs?.filters?.[data.source], change('filter'))];
+  if (kind === 'media') {
+    const select = h('select', { onchange: () => change('action')(select.value) },
+      ...[['play', 'Play'], ['pause', 'Pause'], ['stop', 'Stop'], ['restart', 'Restart'], ['next', 'Next'], ['previous', 'Previous']]
+        .map(([id, text]) => h('option', { value: id, selected: id === data.action }, text)));
+    return [obsName('Input', data.input, obs?.inputs, change('input')), field('Action', select)];
+  }
+  if (kind === 'volume') {
+    const input = h('input', { type: 'number', value: data.db, min: -60, max: 60, onchange: () => commit({ volume: { ...data, db: Math.trunc(Number(input.value)) || 0 } }) });
+    return [obsName('Input', data.input, obs?.inputs, change('input')), field('Change by (dB)', input, 'Stops at 0 dB, so it never boosts the input.')];
+  }
+  return [];
 }
 
 function listEditor(key, action, commit, inSequence) {
@@ -998,6 +1080,8 @@ function actionEditor(label, action, commit, options = {}) {
   } else if (type === 'toggle' || type === 'random') {
     parts.push(h('p', { class: 'hint' }, type === 'toggle' ? 'Each press runs the next step.' : 'Each press runs one step at random.'));
     parts.push(listEditor(type, action, commit, false));
+  } else if (type.startsWith('obs_')) {
+    parts.push(...obsFields(type.slice(4), action.obs, (obs) => commit({ obs })));
   }
   if (action?.profile === APP_LAYER && !shot) {
     const until = h('input', {
@@ -1301,6 +1385,30 @@ function updateSettings() {
     h('button', { class: 'plain', onclick: () => checkForUpdate(true) }, 'Check now'));
 }
 
+function obsStateText() {
+  const obs = state.status?.obs;
+  if (!obs) return 'Connects once a deck is plugged in.';
+  return obs.connected ? 'Connected to OBS.' : obs.error || 'Connecting to OBS…';
+}
+
+function obsSettings() {
+  const obs = state.cfg.obs;
+  const text = (key, label, type, hint) => {
+    const input = h('input', { type, value: obs[key], onchange: () => { obs[key] = input.value.trim(); save(); } });
+    return field(label, input, hint);
+  };
+  const port = h('input', {
+    type: 'number', min: 1, max: 65535, value: obs.port,
+    onchange: () => { obs.port = Math.min(65535, Math.max(1, Number(port.value) || 4455)); port.value = obs.port; save(); },
+  });
+  return section('OBS Studio',
+    h('p', { id: 'obs-state', class: 'hint section-note' }, obsStateText()),
+    h('p', { class: 'hint' }, 'In OBS, open Tools, then WebSocket Server Settings, and enable the server. OBS actions appear in the list once it connects.'),
+    text('host', 'Address', 'text'),
+    field('Port', port),
+    text('password', 'Server password', 'password', 'Kept as plain text in this deck\'s config file.'));
+}
+
 function drawSettingsView() {
   const cfg = state.cfg;
   const number = (key, label, min, max, hint) => {
@@ -1352,6 +1460,7 @@ function drawSettingsView() {
     section('Key defaults',
       color('color', 'Default icon colour'),
       color('background', 'Default key background')),
+    obsSettings(),
     updateSettings()));
 }
 
@@ -1430,6 +1539,12 @@ function draw() {
 
 function drawStatus(status) {
   state.status = status;
+  const obs = JSON.stringify(status?.obs ?? null);
+  if (obs !== state.obs && state.cfg) {
+    state.obs = obs;
+    drawActions();
+    if ($('obs-state')) $('obs-state').textContent = obsStateText();
+  }
   const connection = $('connection');
   if (!status?.connected) {
     $('live-deck').replaceChildren();
