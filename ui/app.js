@@ -902,6 +902,9 @@ function actionEditor(label, action, commit, options = {}) {
     action = action.one_shot;
     commit = (value, quiet) => plainCommit(value === undefined ? undefined : { one_shot: value }, quiet);
   }
+  // Following an app is an option of the profile action, so it edits like one.
+  const follow = action?.follow_app;
+  if (follow) action = { profile: APP_LAYER };
   const type = actionType(action);
   const parts = [];
   const take = (item) => {
@@ -986,7 +989,18 @@ function actionEditor(label, action, commit, options = {}) {
     parts.push(h('p', { class: 'hint' }, type === 'toggle' ? 'Each press runs the next step.' : 'Each press runs one step at random.'));
     parts.push(listEditor(type, action, commit, false));
   }
-  if (type === 'page' || type === 'profile') {
+  if (action?.profile === APP_LAYER && !shot) {
+    const until = h('input', {
+      type: 'checkbox', checked: !!follow,
+      onchange: () => commit(until.checked ? { follow_app: { others: false } } : { profile: APP_LAYER }),
+    });
+    parts.push(h('label', { class: 'check one-shot' }, until, 'Return when the app loses focus'));
+    if (follow) {
+      const others = h('input', { type: 'checkbox', checked: !!follow.others, onchange: () => commit({ follow_app: { others: others.checked } }) });
+      parts.push(h('label', { class: 'check one-shot nested' }, others, 'Follow other apps that have a profile'));
+    }
+  }
+  if ((type === 'page' || type === 'profile') && !follow) {
     const box = h('input', { type: 'checkbox', checked: shot, onchange: () => plainCommit(box.checked ? { one_shot: action } : action) });
     parts.push(h('label', { class: 'check one-shot', title: 'Goes back after the next button press' }, box, 'One shot'));
     if (shot) parts.push(h('p', { class: 'hint' }, 'Returns here after the next button press.'));

@@ -183,6 +183,7 @@ input[type=text]:hover, input[type=number]:hover, select:hover { border-color: v
 .date-style { display: flex; flex-direction: column; gap: 6px; }
 .date-style [hidden] { display: none; }
 .one-shot { margin: 8px 0 0; font-size: 13px; }
+.one-shot.nested { margin-left: 22px; }
 .check { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
 
 /* Look of a key: icon tile, then colours beside it */

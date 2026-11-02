@@ -9,6 +9,8 @@
 #        | { text = "types this" } | { close = "app.exe" } | { page = "name" } | "back"
 #        | { profile = "name" } | "next_page" | "prev_page" | { brightness = -10 } | { play_sound = "file" } | "stop_sound"
 #        | { app_volume = 5 } | "app_volume_reset"
+#        | { follow_app = { others = false } } opens the focused app's profile until that app loses
+#          focus; others = true moves on to other apps that have a profile
 #        | { one_shot = { page = "name" } } returns after the next button press; also takes profile
 #        | { scroll_up = 3 } | { scroll_down = 3 } | { scroll_left = 3 } | { scroll_right = 3 }
 #        | { sequence = [..., { delay = 100 }, ...] } | { toggle = [...] } | { random = [...] }

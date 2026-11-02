@@ -37,6 +37,12 @@ pub enum Action {
     Back,
     NextPage,
     PrevPage,
+    /// Switches to the focused app's profile, and returns to where it started when that app loses
+    /// focus. With `others`, moving to another app with a profile follows it instead.
+    FollowApp {
+        #[serde(default)]
+        others: bool,
+    },
     /// Runs a page, folder or profile switch, then returns to where it started once the next
     /// button is pressed and released.
     OneShot(Box<Action>),

@@ -32,6 +32,15 @@ struct PendingClick {
     at: u64,
 }
 
+/// A profile opened until its app loses focus.
+#[derive(Clone, Copy)]
+struct Follow {
+    origin: Location,
+    depth: usize,
+    app: usize,
+    others: bool,
+}
+
 /// (profile, page) indexes.
 type Location = (usize, usize);
 
@@ -58,6 +67,7 @@ pub struct Engine {
     pending: Option<PendingClick>,
     /// Where a one-shot switch returns to, with the history length to restore.
     return_to: Option<(Location, usize)>,
+    follow: Option<Follow>,
     /// A button went down since then, so its release ends the one shot.
     shot_pressed: bool,
     switches: HashMap<u8, Switch>,
@@ -83,6 +93,7 @@ impl Engine {
             held: Vec::new(),
             pending: None,
             return_to: None,
+            follow: None,
             shot_pressed: false,
             switches: HashMap::new(),
             now: 0,
@@ -98,6 +109,7 @@ impl Engine {
         self.cfg = cfg;
         self.focus_rule = None;
         self.focused = None;
+        self.follow = None;
         self.history.clear();
         self.release_all();
     }
@@ -148,6 +160,27 @@ impl Engine {
     pub fn focus_changed(&mut self, window: &Window) {
         self.focused = self.cfg.profiles.iter().position(|p| p.matches(window));
         let rule = self.cfg.profiles.iter().position(|p| p.on_focus && p.matches(window));
+        if let Some(mut follow) = self.follow {
+            if self.focused == Some(follow.app) {
+                self.focus_rule = rule;
+                return;
+            }
+            if let (true, Some(app)) = (follow.others, self.focused) {
+                follow.app = app;
+                self.follow = Some(follow);
+                self.profile = app;
+                self.focus_rule = rule;
+                return;
+            }
+            self.follow = None;
+            self.history.truncate(follow.depth);
+            self.move_to(follow.origin);
+            self.focus_rule = rule;
+            if let Some(profile) = rule {
+                self.profile = profile; // an app that switches by itself still gets its profile
+            }
+            return;
+        }
         if rule != self.focus_rule {
             self.cancel_one_shot(); // the deck is following the new app now
             self.focus_rule = rule;
@@ -211,6 +244,15 @@ impl Engine {
                 if let Some(profile) = target {
                     self.history.push(self.current());
                     self.profile = profile;
+                    self.follow = None;
+                }
+            }
+            Some(Action::FollowApp { others }) => {
+                if let Some(app) = self.focused {
+                    let started = self.follow.map(|f| (f.origin, f.depth));
+                    let (origin, depth) = started.unwrap_or((self.current(), self.history.len()));
+                    self.profile = app;
+                    self.follow = Some(Follow { origin, depth, app, others });
                 }
             }
             Some(Action::OneShot(inner)) => {
@@ -817,6 +859,119 @@ mod tests {
         assert_eq!(e.profile_name(), "Tools");
         tap(&mut e, 5, 300);
         assert_eq!(e.profile_name(), "Tools", "no jump back from under the new app");
+    }
+
+    const FOLLOW: &str = r#"
+        [[profile]]
+        name = "Home"
+        [[profile.page]]
+        name = "start"
+        [profile.page.keys.3]
+        action = { page = "other" }
+        [[profile.page]]
+        name = "other"
+        [profile.page.keys.0]
+        action = { follow_app = {} }
+        [profile.page.keys.1]
+        action = { follow_app = { others = true } }
+        [profile.page.keys.2]
+        action = { profile = "Home" }
+        [profile.page.keys.3]
+        action = { page = "other" }
+        [[profile]]
+        name = "Zed"
+        exe = "zed.exe"
+        on_focus = false
+        [[profile.page]]
+        name = "edit"
+        [profile.page.keys.2]
+        action = { profile = "Home" }
+        [[profile]]
+        name = "Vlc"
+        exe = "vlc.exe"
+        on_focus = false
+        [[profile.page]]
+        name = "play"
+        [[profile]]
+        name = "Auto"
+        exe = "auto.exe"
+        [[profile.page]]
+        name = "auto"
+    "#;
+
+    fn following() -> Engine {
+        let mut e = Engine::new(Config::parse(FOLLOW).unwrap());
+        e.focus_changed(&app("zed.exe"));
+        e.tick(10, &none);
+        key(&mut e, 3, true, 100);
+        key(&mut e, 3, false, 200);
+        assert_eq!(e.page_name(), "other");
+        e
+    }
+    fn app(exe: &str) -> Window {
+        Window { exe: exe.into(), title: String::new() }
+    }
+
+    #[test]
+    fn follow_returns_to_the_page_when_the_app_loses_focus() {
+        let mut e = following();
+        key(&mut e, 0, true, 300);
+        assert_eq!(e.profile_name(), "Zed");
+        e.focus_changed(&app("zed.exe"));
+        assert_eq!(e.profile_name(), "Zed", "same app, so it stays");
+        e.focus_changed(&app("notepad.exe"));
+        assert_eq!((e.profile_name(), e.page_name()), ("Home", "other"));
+    }
+
+    #[test]
+    fn without_others_another_profiled_app_also_returns() {
+        let mut e = following();
+        key(&mut e, 0, true, 300);
+        e.focus_changed(&app("vlc.exe"));
+        assert_eq!((e.profile_name(), e.page_name()), ("Home", "other"));
+    }
+
+    #[test]
+    fn with_others_it_follows_then_returns_to_the_very_start() {
+        let mut e = following();
+        key(&mut e, 1, true, 300);
+        e.focus_changed(&app("vlc.exe"));
+        assert_eq!(e.profile_name(), "Vlc");
+        e.focus_changed(&app("zed.exe"));
+        assert_eq!(e.profile_name(), "Zed");
+        e.focus_changed(&app("notepad.exe"));
+        assert_eq!((e.profile_name(), e.page_name()), ("Home", "other"));
+    }
+
+    #[test]
+    fn switching_profile_by_hand_ends_following() {
+        let mut e = following();
+        key(&mut e, 0, true, 300);
+        key(&mut e, 0, false, 400);
+        key(&mut e, 2, true, 500);
+        assert_eq!(e.profile_name(), "Home");
+        e.focus_changed(&app("vlc.exe"));
+        e.focus_changed(&app("notepad.exe"));
+        assert_eq!(e.page_name(), "other", "nothing left to return to");
+    }
+
+    #[test]
+    fn follow_with_no_matching_app_does_nothing() {
+        let mut e = Engine::new(Config::parse(FOLLOW).unwrap());
+        key(&mut e, 3, true, 100);
+        key(&mut e, 3, false, 200);
+        key(&mut e, 0, true, 300);
+        assert_eq!(e.profile_name(), "Home");
+        e.focus_changed(&app("notepad.exe"));
+        assert_eq!(e.page_name(), "other");
+    }
+
+    #[test]
+    fn leaving_for_an_auto_switching_app_goes_to_its_profile() {
+        let mut e = following();
+        key(&mut e, 0, true, 300);
+        e.focus_changed(&app("auto.exe"));
+        assert_eq!(e.profile_name(), "Auto");
     }
 
     fn holder() -> Engine {
