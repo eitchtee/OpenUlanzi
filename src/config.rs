@@ -271,6 +271,12 @@ pub struct Config {
     /// Longest gap between the two clicks of a double click.
     #[serde(default = "default_double")]
     pub double_ms: u64,
+    /// Turn the deck off after this long without keyboard or mouse input. 0 keeps it on.
+    #[serde(default)]
+    pub sleep_minutes: u32,
+    /// Turn the deck off while Windows has the screens off.
+    #[serde(default)]
+    pub sleep_with_display: bool,
     /// Wide screen on pages that don't set it themselves.
     #[serde(default = "default_wide")]
     pub wide: Display,

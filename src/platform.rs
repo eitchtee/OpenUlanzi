@@ -2,7 +2,7 @@
 // shortcut: Windows only, hide this module behind cfg when adding Linux/macOS.
 use anyhow::{anyhow, bail, Result};
 use resvg::tiny_skia::Pixmap;
-use windows::core::{w, Interface, HSTRING, PCWSTR, PWSTR};
+use windows::core::{w, Interface, GUID, HSTRING, PCWSTR, PWSTR};
 use windows::Win32::Foundation::SYSTEMTIME;
 use windows::Win32::Globalization::{GetDateFormatEx, DATE_SHORTDATE};
 use windows::Win32::Graphics::Gdi::{
@@ -14,11 +14,20 @@ use windows::Win32::Media::Audio::{
     MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
 };
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED};
+use std::ffi::c_void;
 use std::os::windows::process::CommandExt;
-use windows::Win32::Foundation::{CloseHandle, FILETIME, HWND, LPARAM, WPARAM};
+use std::ptr::null_mut;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Once;
+use std::time::Duration;
+use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, HWND, LPARAM, WIN32_ERROR, WPARAM};
+use windows::Win32::System::Power::{
+    PowerSettingRegisterNotification, DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS, POWERBROADCAST_SETTING,
+};
+use windows::Win32::UI::WindowsAndMessaging::{DEVICE_NOTIFY_CALLBACK, PBT_POWERSETTINGCHANGE};
 use windows::Win32::Media::Multimedia::mciSendStringW;
 use windows::Win32::System::StationsAndDesktops::{CloseDesktop, OpenInputDesktop, DESKTOP_CONTROL_FLAGS, DESKTOP_SWITCHDESKTOP};
-use windows::Win32::System::SystemInformation::{GetLocalTime, GlobalMemoryStatusEx, MEMORYSTATUSEX};
+use windows::Win32::System::SystemInformation::{GetLocalTime, GetTickCount, GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows::Win32::System::Threading::{
     GetSystemTimes, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
@@ -351,6 +360,58 @@ impl Stats {
     }
 }
 
+/// Display state as Windows last reported it: 0 off, 1 on, 2 dimmed.
+static DISPLAY: AtomicU32 = AtomicU32::new(u32::MAX);
+
+/// Called by Windows from its own thread, once at registration and on every change.
+unsafe extern "system" fn display_changed(_: *const c_void, kind: u32, setting: *const c_void) -> u32 {
+    if kind == PBT_POWERSETTINGCHANGE && !setting.is_null() {
+        let setting = unsafe { &*(setting as *const POWERBROADCAST_SETTING) };
+        if setting.DataLength >= 4 {
+            let state = unsafe { (setting.Data.as_ptr() as *const u32).read_unaligned() };
+            DISPLAY.store(state, Ordering::Relaxed);
+        }
+    }
+    0
+}
+
+/// Starts listening for the display turning on and off. Safe to call more than once.
+pub fn watch_display() {
+    static STARTED: Once = Once::new();
+    STARTED.call_once(|| unsafe {
+        // GUID_CONSOLE_DISPLAY_STATE
+        let display = GUID::from_u128(0x6fe69556_704a_47a0_8f24_c28d936fda47);
+        // Leaked on purpose: this lasts as long as the app, and Windows may keep the pointer.
+        let params = Box::leak(Box::new(DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS {
+            Callback: Some(display_changed),
+            Context: null_mut(),
+        }));
+        let mut registration = null_mut();
+        let result = PowerSettingRegisterNotification(
+            &display,
+            DEVICE_NOTIFY_CALLBACK,
+            HANDLE(params as *mut _ as *mut c_void),
+            &mut registration,
+        );
+        if result != WIN32_ERROR(0) {
+            eprintln!("cannot watch the display state: error {}", result.0);
+        }
+    });
+}
+
+pub fn display_off() -> bool {
+    DISPLAY.load(Ordering::Relaxed) == 0
+}
+
+/// How long since the last keyboard or mouse input anywhere on this PC.
+pub fn idle_time() -> Duration {
+    let mut info = LASTINPUTINFO { cbSize: size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    if !unsafe { GetLastInputInfo(&mut info) }.as_bool() {
+        return Duration::ZERO;
+    }
+    Duration::from_millis(unsafe { GetTickCount() }.wrapping_sub(info.dwTime) as u64)
+}
+
 /// Types text through Unicode input, so the keyboard layout doesn't matter.
 pub fn send_text(text: &str) -> Result<()> {
     let unicode = |unit: u16, up: bool| INPUT {
@@ -467,6 +528,19 @@ mod tests {
         assert_eq!(image.width(), 48);
         assert!(image.pixels().iter().any(|p| p.alpha() > 0), "not blank");
         assert!(app_icon_png(r"C:\no\such\program.exe").is_none() || !png.is_empty());
+    }
+
+    #[test]
+    fn windows_reports_the_display_state() {
+        watch_display();
+        watch_display();
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(DISPLAY.load(Ordering::Relaxed) <= 2, "Windows reports it once at registration");
+    }
+
+    #[test]
+    fn idle_time_is_readable() {
+        assert!(idle_time() < Duration::from_secs(60 * 60 * 24 * 365));
     }
 
     #[test]

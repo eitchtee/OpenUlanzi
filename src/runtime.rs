@@ -16,6 +16,8 @@ use std::time::{Duration, Instant, SystemTime};
 const KEEP_ALIVE: Duration = Duration::from_secs(5);
 const HOUSEKEEPING: Duration = Duration::from_secs(1);
 const LOCK_CHECK: Duration = Duration::from_millis(100);
+/// Pressing the deck can't turn the screens on, so it stays usable this long without them.
+const DECK_ONLY_AWAKE: Duration = Duration::from_secs(30);
 const STATS_REFRESH: Duration = Duration::from_secs(2);
 /// Longest wait for a bundle ack, so one lost ack cannot freeze the screens.
 const ACK_TIMEOUT: Duration = Duration::from_millis(300);
@@ -27,6 +29,8 @@ pub struct Status {
     pub device: String,
     pub connected: bool,
     pub locked: bool,
+    /// Dark because nobody is at the PC, as opposed to locked.
+    pub asleep: bool,
     pub profile: String,
     pub page: String,
     /// Layers currently held, oldest first.
@@ -57,6 +61,8 @@ struct App<F> {
     started: Instant,
     brightness: u8,
     locked: bool,
+    asleep: bool,
+    last_deck_input: Instant,
     wake: Arc<AtomicBool>,
     on_status: F,
     published: Option<Status>,
@@ -90,6 +96,7 @@ impl<F: FnMut(&Status)> App<F> {
             device: self.device.clone().unwrap_or_default(),
             connected,
             locked: self.locked,
+            asleep: self.asleep,
             profile: self.engine.profile_name().to_string(),
             page: self.engine.page_name().to_string(),
             layers: self.engine.active_layers(),
@@ -273,7 +280,13 @@ impl<F: FnMut(&Status)> App<F> {
     }
 
     fn check_lock(&mut self, deck: &mut Deck) -> Result<()> {
-        let locked = platform::session_locked();
+        let idle = platform::idle_time().min(self.last_deck_input.elapsed());
+        let limit = Duration::from_secs(self.engine.cfg.sleep_minutes as u64 * 60);
+        let screens_off = self.engine.cfg.sleep_with_display
+            && platform::display_off()
+            && self.last_deck_input.elapsed() >= DECK_ONLY_AWAKE;
+        self.asleep = screens_off || (!limit.is_zero() && idle >= limit);
+        let locked = platform::session_locked() || self.asleep;
         if locked != self.locked {
             self.locked = locked;
             self.engine.release_all();
@@ -310,6 +323,7 @@ impl<F: FnMut(&Status)> App<F> {
             // Drain everything queued, then paint once: latest state wins, never a backlog.
             let mut next = deck.read(10)?;
             while let Some(input) = next {
+                self.last_deck_input = Instant::now();
                 if self.locked {
                     // The firmware lights the screen again on any press.
                     set_brightness(deck, self.current_brightness())?;
@@ -349,6 +363,7 @@ pub fn run(
     on_status: impl FnMut(&Status),
 ) -> Result<()> {
     let cfg = Config::load(&path)?;
+    platform::watch_display();
     let mut app = App {
         device,
         modified: modified(&path),
@@ -358,6 +373,8 @@ pub fn run(
         started: Instant::now(),
         path,
         locked: false,
+        asleep: false,
+        last_deck_input: Instant::now(),
         wake,
         on_status,
         published: None,

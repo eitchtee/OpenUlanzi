@@ -1274,6 +1274,8 @@ function drawSettingsView() {
     field('Model', model, 'The deck cannot report its model, so this decides which controls are shown.'),
     number('brightness', 'Brightness', 0, 100),
     number('locked_brightness', 'Brightness while the PC is locked', 0, 100),
+    number('sleep_minutes', 'Turn the deck off after (minutes)', 0, 1440, 'With no keyboard or mouse input for this long. Any input wakes it, and so does pressing the deck. 0 keeps it on.'),
+    toggle('sleep_with_display', 'Turn the deck off when Windows turns the screens off'),
     number('hold_ms', 'Hold to show a page (ms)', 50, 2000, 'For keys that also have a click action.'),
     number('hold_action_ms', 'Hold to run an action (ms)', 150, 5000, 'Keys can set their own time.'),
     number('double_ms', 'Double click gap (ms)', 100, 1000, 'Single clicks on keys with a double click action wait this long.'),
@@ -1370,7 +1372,7 @@ function drawStatus(status) {
     $('showing').textContent = 'Plug it in and close Ulanzi Studio.';
   } else {
     connection.className = 'connection on';
-    connection.textContent = status.locked ? 'Deck locked' : 'Deck connected';
+    connection.textContent = status.asleep ? 'Deck asleep' : status.locked ? 'Deck locked' : 'Deck connected';
     const held = status.layers.length > 0;
     $('showing').className = held ? 'showing held' : 'showing';
     $('showing').textContent = held ? `Holding ${status.layers.at(-1)}` : `Showing ${status.profile}, ${status.page}`;

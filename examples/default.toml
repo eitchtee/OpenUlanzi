@@ -25,6 +25,8 @@
 model = "d200x"  # d200x, or d200h and d200 for keys only. USB cannot tell them apart.
 brightness = 80
 locked_brightness = 0
+sleep_minutes = 0  # turn the deck off after this long with no keyboard or mouse input; 0 stays on
+sleep_with_display = false  # turn the deck off while Windows has the screens off
 hold_ms = 200  # to show a page on keys that also have a click action
 hold_action_ms = 600  # to run a hold action
 double_ms = 250
