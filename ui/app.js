@@ -111,6 +111,8 @@ function icon(name) {
   return span;
 }
 
+/** A titled block; consecutive ones are split by a line. */
+const section = (title, ...children) => h('section', { class: 'form-section' }, h('h3', {}, title), ...children);
 const field = (label, control, hint) => h('label', { class: 'field' }, h('span', {}, label), control, hint ? h('p', { class: 'hint' }, hint) : null);
 const profile = () => state.cfg.profile[state.profile];
 const page = () => profile().page[state.page];
@@ -274,7 +276,7 @@ function iconButton(glyph, label, run) {
 }
 
 function confirmDialog(title, text, action, run) {
-  openDialog(h('h2', {}, title), h('p', {}, text), h('div', { class: 'row done' },
+  openDialog(dialogHead(title), h('p', {}, text), dialogFoot(
     h('button', { class: 'plain', onclick: () => $('dialog').close() }, 'Cancel'),
     h('button', { class: 'plain danger', onclick: () => { $('dialog').close(); run(); } }, action)));
   $('dialog').classList.add('narrow');
@@ -719,9 +721,17 @@ function drawActions() {
 }
 
 // ---------------------------------------------------------------- dialogs
+function dialogHead(title) {
+  return h('header', { class: 'dialog-head' }, h('h2', {}, title), iconButton('x-bold', 'Close dialog', () => $('dialog').close()));
+}
+
+function dialogFoot(...buttons) {
+  return h('footer', { class: 'dialog-foot' }, ...buttons);
+}
+
 function openDialog(...content) {
   const dialog = $('dialog');
-  dialog.classList.remove('narrow');
+  dialog.classList.remove('narrow', 'medium');
   dialog.replaceChildren(...content);
   if (!dialog.open) dialog.showModal();
   return dialog;
@@ -754,10 +764,10 @@ function iconPicker(onPick) {
     },
   }, 'Use my own SVG or PNG');
   openDialog(
-    h('h2', {}, 'Choose an icon'),
-    h('div', { class: 'row' }, search, style, own),
-    grid, count,
-    h('button', { class: 'plain done', onclick: () => $('dialog').close() }, 'Cancel'),
+    dialogHead('Choose an icon'),
+    section('Search', h('div', { class: 'row' }, search, style, own)),
+    section('Icons', grid, count),
+    dialogFoot(h('button', { class: 'plain', onclick: () => $('dialog').close() }, 'Cancel')),
   );
   refresh();
   search.focus();
@@ -799,10 +809,10 @@ function keyboardPicker(current, onSave) {
   }
   layout.addEventListener('change', refresh);
   openDialog(
-    h('h2', {}, 'Choose keys'),
-    h('div', { class: 'row' }, layout, h('span', { class: 'kb-hex' }, 'Other key code'), hex, h('button', { onclick: addHex }, 'Add')),
-    combo, board,
-    h('div', { class: 'row done' },
+    dialogHead('Choose keys'),
+    section('Selected keys', combo),
+    section('Keyboard', h('div', { class: 'row kb-options' }, layout, h('span', { class: 'kb-hex' }, 'Other key code'), hex, h('button', { onclick: addHex }, 'Add')), board),
+    dialogFoot(
       h('button', { class: 'plain', onclick: () => { tokens.length = 0; refresh(); } }, 'Clear'),
       h('button', { class: 'plain', onclick: () => $('dialog').close() }, 'Cancel'),
       h('button', { class: 'plain primary', onclick: () => { $('dialog').close(); onSave(tokens.join('+')); } }, 'Use these keys')),
@@ -1056,8 +1066,8 @@ function iconTile(control, b) {
 
 function appearance(control, b) {
   const set = setter(control, 'label');
-  const label = h('input', { type: 'text', value: b?.label ?? '', oninput: () => set(label.value, true) });
-  if (!hasScreen(control)) return [field('Name', label)];
+  const label = h('input', { type: 'text', value: b?.label ?? '', 'aria-label': 'Name', oninput: () => set(label.value, true) });
+  if (!hasScreen(control)) return [label];
 
   const parts = [displaySection(control, b)];
   if (control === 'wide' && !['image', 'page_indicator'].includes(wideDisplay(b))) {
@@ -1080,7 +1090,7 @@ function appearance(control, b) {
 }
 
 function holdSection(control, b) {
-  const parts = [h('h3', {}, 'When held'), actionEditor('', b?.hold, setter(control, 'hold'), { show: true, decorate: decorator(control) })];
+  const parts = [actionEditor('', b?.hold, setter(control, 'hold'), { show: true, decorate: decorator(control) })];
   if (!b?.hold) return parts;
   const shows = b.hold.show !== undefined;
   const instant = shows && !b.action && !b.double;
@@ -1122,20 +1132,23 @@ function drawInspector() {
     h('div', { class: 'inspector-head' }, h('h2', {}, controlName(control)),
       iconButton('dots-three-bold', 'More options', (e) => controlMenu(menuPoint(e), control)),
       iconButton('x-bold', 'Close', () => select(null))),
-    ...appearance(control, b),
+    section(hasScreen(control) ? 'Appearance' : 'Name', ...appearance(control, b)),
   ];
+  const slot = (key, label, options = {}) => actionEditor(label, b?.[key], setter(control, key), options);
+  const doubleHint = b?.double ? h('p', { class: 'hint' }, `The single click runs ${state.cfg.double_ms} ms later, to rule out a second click.`) : null;
   if (isKnob(control)) {
-    parts.push(h('h3', {}, 'Actions'));
-    for (const [key, label] of [['action', 'Click'], ['double', 'Double click'], ['left', 'Turn left'], ['right', 'Turn right'], ['press_left', 'Turn left while pressed'], ['press_right', 'Turn right while pressed']]) {
-      parts.push(actionEditor(label, b?.[key], setter(control, key), { decorate: key === 'action' ? decorator(control) : undefined }));
-    }
+    parts.push(
+      section('Click', slot('action', '', { decorate: decorator(control) })),
+      section('Double click', slot('double', ''), doubleHint),
+      section('Turn', slot('left', 'Left'), slot('right', 'Right')),
+      section('Turn while pressed', slot('press_left', 'Left'), slot('press_right', 'Right')),
+    );
   } else {
-    parts.push(h('h3', {}, b?.hold ? 'When tapped' : 'When pressed'));
-    parts.push(actionEditor('', b?.action, setter(control, 'action'), { decorate: decorator(control) }));
-    parts.push(h('h3', {}, 'When double clicked'));
-    parts.push(actionEditor('', b?.double, setter(control, 'double')));
-    if (b?.double) parts.push(h('p', { class: 'hint' }, `The single click runs ${state.cfg.double_ms} ms later, to rule out a second click.`));
-    parts.push(...holdSection(control, b));
+    parts.push(
+      section(b?.hold ? 'When tapped' : 'When pressed', slot('action', '', { decorate: decorator(control) })),
+      section('When double clicked', slot('double', ''), doubleHint),
+      section('When held', ...holdSection(control, b)),
+    );
   }
   root.replaceChildren(...parts);
 }
@@ -1168,7 +1181,7 @@ function deleteProfile(index) {
 
 function profileDialog(index) {
   const target = state.cfg.profile[index];
-  const name = h('input', { type: 'text', value: target.name, onchange: () => renameProfile(target, name.value.trim()) });
+  const name = h('input', { type: 'text', value: target.name, 'aria-label': 'Profile name', onchange: () => renameProfile(target, name.value.trim()) });
   const text = (key, label, hint) => {
     const input = h('input', {
       type: 'text', value: target[key] ?? '',
@@ -1186,19 +1199,19 @@ function profileDialog(index) {
     return h('label', { class: 'check' }, box, label);
   };
   openDialog(
-    h('h2', {}, 'Profile settings'),
+    dialogHead('Profile settings'),
     h('div', { class: 'profile-form' },
-      field('Name', name),
-      h('h3', {}, 'Use this profile for'),
-      h('p', { class: 'hint' }, 'Every field you fill in has to match, and the first matching profile from the top wins. Leave them all empty for a profile that only opens through an action or as the default.'),
+      section('Name', name),
+      section('Use this profile for', h('p', { class: 'hint' }, 'Every field you fill in has to match, and the first matching profile from the top wins. Leave them all empty for a profile that only opens through an action or as the default.'),
       text('exe', 'Program', 'For example zed.exe, or a full path.'),
       text('title', 'Window title contains'),
-      text('title_regex', 'Window title matches regex'),
-      flag('on_focus', 'Switch to it automatically while the app has focus'),
-      flag('on_hold', 'Show its first page while holding a focused-app key')),
-    h('div', { class: 'row done' },
-      h('button', { class: 'plain primary', onclick: () => $('dialog').close() }, 'Done')),
+      text('title_regex', 'Window title matches regex')),
+      section('When an app matches',
+        flag('on_focus', 'Switch to it automatically while the app has focus'),
+        flag('on_hold', 'Show its first page while holding a focused-app key'))),
+    dialogFoot(h('button', { class: 'plain primary', onclick: () => $('dialog').close() }, 'Done')),
   );
+  $('dialog').classList.add('medium');
 }
 
 const DATE_STYLES = [['', 'System format'], ['dd/MM/yyyy', '31/12/2026'], ['MM/dd/yyyy', '12/31/2026'], ['yyyy-MM-dd', '2026-12-31'], ['dd/MM', '31/12'], ['d MMM yyyy', '31 Dec 2026'], ['d MMM', '31 Dec']];
@@ -1281,15 +1294,11 @@ async function checkForUpdate(manual = false) {
 }
 
 function updateSettings() {
-  return [
-    h('h2', { class: 'sheet-section' }, 'Updates'),
-    h('p', { class: 'hint' }, `Version ${state.version}`),
-    (() => {
-      const input = h('input', { type: 'checkbox', checked: state.cfg.check_updates, onchange: () => { state.cfg.check_updates = input.checked; save(); } });
-      return h('label', { class: 'check' }, input, 'Check GitHub for new versions');
-    })(),
-    h('button', { class: 'plain', onclick: () => checkForUpdate(true) }, 'Check now'),
-  ];
+  const input = h('input', { type: 'checkbox', checked: state.cfg.check_updates, onchange: () => { state.cfg.check_updates = input.checked; save(); } });
+  return section('Updates',
+    h('p', { class: 'hint section-note' }, `Version ${state.version}`),
+    h('label', { class: 'check' }, input, 'Check GitHub for new versions'),
+    h('button', { class: 'plain', onclick: () => checkForUpdate(true) }, 'Check now'));
 }
 
 function drawSettingsView() {
@@ -1321,23 +1330,29 @@ function drawSettingsView() {
   $('stage').replaceChildren(h('div', { class: 'sheet' },
     h('h1', {}, 'Settings'),
     h('p', {}, 'These apply to this deck. Start at login is in the tray menu.'),
-    field('Deck name', name),
-    field('Model', model, 'The deck cannot report its model, so this decides which controls are shown.'),
-    number('brightness', 'Brightness', 0, 100),
-    number('locked_brightness', 'Brightness while the PC is locked', 0, 100),
-    number('sleep_minutes', 'Turn the deck off after (minutes)', 0, 1440, 'With no keyboard or mouse input for this long. Any input wakes it, and so does pressing the deck. 0 keeps it on.'),
-    toggle('sleep_with_display', 'Turn the deck off when Windows turns the screens off'),
-    number('hold_ms', 'Hold to show a page (ms)', 50, 2000, 'For keys that also have a click action.'),
-    number('hold_action_ms', 'Hold to run an action (ms)', 150, 5000, 'Keys can set their own time.'),
-    number('double_ms', 'Double click gap (ms)', 100, 1000, 'Single clicks on keys with a double click action wait this long.'),
-    field('Wide screen on pages that do not set it', wide),
-    toggle('twelve_hour', 'Use a 12-hour clock'),
-    dateField(),
-    field('Weekday', weekday),
-    color('color', 'Default icon colour'),
-    color('background', 'Default key background'),
-    ...updateSettings(),
-    forgetButton()));
+    section('This deck',
+      field('Deck name', name),
+      field('Model', model, 'The deck cannot report its model, so this decides which controls are shown.'),
+      forgetButton()),
+    section('Brightness',
+      number('brightness', 'While in use', 0, 100),
+      number('locked_brightness', 'While the PC is locked', 0, 100)),
+    section('Sleep',
+      number('sleep_minutes', 'Turn the deck off after (minutes)', 0, 1440, 'With no keyboard or mouse input for this long. Any input wakes it, and so does pressing the deck. 0 keeps it on.'),
+      toggle('sleep_with_display', 'Turn the deck off when Windows turns the screens off')),
+    section('Timing',
+      number('hold_ms', 'Hold to show a page (ms)', 50, 2000, 'For keys that also have a click action.'),
+      number('hold_action_ms', 'Hold to run an action (ms)', 150, 5000, 'Keys can set their own time.'),
+      number('double_ms', 'Double click gap (ms)', 100, 1000, 'Single clicks on keys with a double click action wait this long.')),
+    section('Clock and wide screen',
+      field('Wide screen on pages that do not set it', wide),
+      toggle('twelve_hour', 'Use a 12-hour clock'),
+      dateField(),
+      field('Weekday', weekday)),
+    section('Key defaults',
+      color('color', 'Default icon colour'),
+      color('background', 'Default key background')),
+    updateSettings()));
 }
 
 // ---------------------------------------------------------------- shell

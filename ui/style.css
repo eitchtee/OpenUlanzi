@@ -73,7 +73,6 @@ body.no-panels { grid-template-columns: 232px minmax(0, 1fr); }
 .update[hidden] { display: none; }
 .update p { font-weight: 600; }
 .update .link { padding: 0; color: var(--ink); text-align: left; text-decoration: underline; }
-.sheet-section { margin: 20px 0 4px; font-size: 16px; font-weight: 600; }
 .views { padding: 8px; border-top: 1px solid var(--line); }
 .profile[aria-current="true"], .view[aria-current="true"] { background: var(--ink); color: var(--paper); }
 .profile[aria-current="true"] small { color: inherit; opacity: .7; }
@@ -173,7 +172,13 @@ body.no-panels { grid-template-columns: 232px minmax(0, 1fr); }
 .inspector .slot.filled { background: var(--paper); }
 .inspector-head { display: flex; align-items: center; gap: 2px; margin-bottom: 10px; }
 .inspector-head h2 { flex: 1; font-size: 17px; font-weight: 600; }
-.inspector h3 { margin: 16px 0 6px; font-size: 12px; font-weight: 600; color: var(--ink-soft); }
+/* The same titled block everywhere: settings, the control panel and dialogs. */
+.form-section { padding: 14px 0; border-top: 1px solid var(--line); }
+.form-section:last-child { padding-bottom: 0; }
+.form-section > h3 { margin: 0 0 8px; color: var(--ink); font-size: 13px; font-weight: 600; }
+.inspector-head + .form-section { border-top: 0; padding-top: 2px; }
+.section-note { margin: 0 0 8px; }
+.form-section > .slot-field:last-of-type { margin-bottom: 0; }
 .field { display: block; margin-bottom: 8px; }
 .field > span { display: block; margin-bottom: 3px; font-size: 12px; color: var(--ink-soft); }
 input[type=text], input[type=number], input[type=search], select { width: 100%; padding: 6px 9px; border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--card); }
@@ -258,16 +263,20 @@ kbd { padding: 1px 7px; border-radius: 4px; background: var(--body); box-shadow:
   @starting-style { opacity: 0; transform: scale(.98); }
 }
 .dialog.narrow { width: 460px; }
+.dialog.medium { width: 580px; }
 .dialog::backdrop { background: rgba(20, 34, 40, .5); }
-.dialog h2 { margin-bottom: 12px; font-size: 20px; font-weight: 600; }
-.dialog > p { margin-bottom: 14px; color: var(--ink-soft); }
-.done { margin-top: 14px; justify-content: flex-end; }
-button.done { display: block; margin-left: auto; }
-.icon-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(56px, 1fr)); gap: 4px; height: 52vh; margin-top: 12px; overflow-y: auto; align-content: start; }
+.dialog-head { display: flex; align-items: center; justify-content: space-between; margin: -18px -20px 0; padding: 12px 14px 12px 20px; border-bottom: 1px solid var(--line); }
+.dialog-head h2 { font-size: 18px; font-weight: 600; }
+.dialog-head + .form-section, .dialog-head + .profile-form > .form-section:first-child { border-top: 0; }
+.dialog > p { margin: 14px 0; color: var(--ink-soft); }
+.dialog-foot { display: flex; gap: 6px; justify-content: flex-end; margin: 14px -20px -18px; padding: 12px 20px; border-top: 1px solid var(--line); }
+.dialog .form-section:last-of-type { padding-bottom: 0; }
+.kb-options { margin-bottom: 10px; }
+.icon-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(56px, 1fr)); gap: 4px; height: 44vh; overflow-y: auto; align-content: start; }
 .icon-choice { display: grid; place-items: center; aspect-ratio: 1; border-radius: var(--radius-s); background: var(--body); color: var(--on-mat); }
 .icon-choice:hover { background: #3b4148; }
 .icon-choice .glyph { width: 30px; height: 30px; }
-.combo { min-height: 30px; margin: 12px 0; font-size: 18px; font-weight: 600; }
+.combo { min-height: 26px; font-size: 18px; font-weight: 600; }
 .kb-hex { flex: none; margin-left: 10px; font-size: 12px; color: var(--ink-soft); }
 .row input[maxlength="2"] { flex: 0 0 56px; }
 .board { --unit: 42px; display: flex; flex-wrap: wrap; gap: 12px 16px; padding: 12px; border-radius: var(--radius-m); background: var(--body); overflow-x: auto; }
@@ -280,13 +289,12 @@ button.done { display: block; margin-left: auto; }
 .kb-key { flex: none; width: calc(var(--unit) * var(--w)); height: 36px; padding: 0 2px; overflow: hidden; border-radius: 4px; background: #33373d; color: var(--on-mat); font-size: 12px; white-space: nowrap; }
 .kb-key:hover { background: #4a4f57; }
 .kb-key[aria-pressed="true"] { background: var(--signal); color: var(--ink); font-weight: 600; }
-.profile-form { max-width: 520px; }
-.profile-form h3 { margin: 14px 0 2px; font-size: 14px; font-weight: 600; }
 .profile-form .hint { margin-bottom: 10px; max-width: 56ch; }
 
 /* Settings: a sheet of paper on the mat */
 .sheet { width: 100%; max-width: 560px; margin: 32px auto; padding: 22px 24px; border-radius: var(--radius-m); background: var(--paper); color: var(--ink); box-shadow: 0 18px 30px -16px rgba(8, 20, 26, .75); }
 .sheet h1 { margin-bottom: 4px; font-size: 22px; font-weight: 600; }
+.sheet > .form-section:first-of-type { margin-top: 0; }
 .forget { display: block; margin-top: 18px; color: var(--danger); }
 .sheet > p { margin-bottom: 16px; color: var(--ink-soft); max-width: 62ch; }
 
