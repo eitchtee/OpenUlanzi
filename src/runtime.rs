@@ -21,8 +21,8 @@ const LOCK_CHECK: Duration = Duration::from_millis(100);
 /// Pressing the deck can't turn the screens on, so it stays usable this long without them.
 const DECK_ONLY_AWAKE: Duration = Duration::from_secs(30);
 const STATS_REFRESH: Duration = Duration::from_secs(2);
-/// Longest wait for a bundle ack, so one lost ack cannot freeze the screens.
-const ACK_TIMEOUT: Duration = Duration::from_millis(300);
+/// Time a bundle gets to land before the next write. The deck sends no reply when it is done.
+const BUNDLE_SETTLE: Duration = Duration::from_millis(300);
 
 /// What the deck is doing, for anyone watching it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -196,7 +196,7 @@ impl<F: FnMut(&Status)> App<F> {
     /// changes meanwhile is picked up by the next call, so the latest state wins.
     fn paint(&mut self, deck: &mut Deck, painted: &mut HashMap<u8, Visual>) -> Result<()> {
         if let Some(sent) = self.in_flight {
-            if !deck.acked && sent.elapsed() < ACK_TIMEOUT {
+            if sent.elapsed() < BUNDLE_SETTLE {
                 return Ok(());
             }
             self.in_flight = None;

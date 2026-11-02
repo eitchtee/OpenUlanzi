@@ -20,7 +20,6 @@ pub const CMD_LOCK: u16 = 0x000F;
 pub const CMD_UNLOCK: u16 = 0x0010;
 const CMD_INPUT: u16 = 0x0101;
 const CMD_INPUT_ALT: u16 = 0x0102;
-const CMD_ACK: u16 = 0x010B;
 
 pub const WIDE: u8 = 13;
 const COLS: u8 = 5;
@@ -151,11 +150,6 @@ pub fn small_window(mode: u16, cpu: u8, ram: u8, time: &str, twelve_hour: bool, 
     format!("{mode}|{cpu}|{ram}|{time}|0|{format}|{suffix}").into_bytes()
 }
 
-/// The firmware finished a bundle.
-pub fn is_ack(report: &[u8]) -> bool {
-    report.len() >= 4 && report[..2] == HEADER && u16::from_be_bytes([report[2], report[3]]) == CMD_ACK
-}
-
 pub fn parse_input(report: &[u8]) -> Option<Input> {
     if report.len() < 12 || report[..2] != HEADER {
         return None;
@@ -261,13 +255,6 @@ mod tests {
         assert_ne!(first, same_cell, "a later bundle is new even for the same cell");
         let shared = names(&build_bundle(&[(0, &png), (1, &png)], wide).unwrap());
         assert_eq!(shared.len(), 2, "cells never share a file");
-    }
-
-    #[test]
-    fn acks_are_recognised() {
-        assert!(is_ack(&report(0x010B, [0; 4])));
-        assert!(!is_ack(&report(CMD_INPUT, [0; 4])));
-        assert!(!is_ack(&[0x7c, 0x7c]));
     }
 
     #[test]

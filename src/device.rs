@@ -19,8 +19,6 @@ use windows::Win32::Storage::FileSystem::{
 pub struct Deck {
     device: HidDevice,
     pub last_write: Instant,
-    /// A bundle ack arrived since the last bundle was sent.
-    pub acked: bool,
 }
 
 /// Stable names for decks, safe in file names. A serial is the name; decks with none, or with
@@ -123,7 +121,7 @@ impl Deck {
         let found = decks.iter().find(|(id, _)| name.is_none_or(|n| n == id));
         let (_, path) = found.ok_or_else(|| anyhow!("deck not found"))?;
         let device = context()?.lock().unwrap().open_path(&CString::new(path.as_str())?)?;
-        Ok(Self { device, last_write: Instant::now(), acked: false })
+        Ok(Self { device, last_write: Instant::now() })
     }
 
     fn write(&mut self, packet: &[u8]) -> Result<()> {
@@ -141,15 +139,13 @@ impl Deck {
     }
 
     pub fn bundle(&mut self, zip: &[u8], full: bool) -> Result<()> {
-        self.acked = false;
         protocol::bundle_packets(zip, full).iter().try_for_each(|p| self.write(p))
     }
 
-    /// Ok(None) on timeout or on a report that isn't input (acks, device info).
+    /// Ok(None) on timeout or on a report that isn't input.
     pub fn read(&mut self, timeout_ms: i32) -> Result<Option<Input>> {
         let mut buffer = [0u8; PACKET];
         let len = self.device.read_timeout(&mut buffer, timeout_ms)?;
-        self.acked |= protocol::is_ack(&buffer[..len]);
         Ok(protocol::parse_input(&buffer[..len]))
     }
 }
