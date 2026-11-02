@@ -139,7 +139,14 @@ function media(b, hotkey, label, icon) {
   b.icon ||= `ph:${icon}`;
 }
 
-const state = { device: '', devices: [], plugins: [], cfg: null, profile: 0, page: 0, selected: null, view: 'keys', status: null, icons: new Map(), collapsed: new Set(), clipboard: null, armed: null };
+const state = {
+  device: '', devices: [], plugins: [], cfg: null, profile: 0, page: 0,
+  /** Every selected control. Shift+click ranges start at the anchor. */
+  selection: new Set(), anchor: null,
+  /** The one selected control, or null when none or several are. */
+  get selected() { return this.selection.size === 1 ? [...this.selection][0] : null; },
+  set selected(control) { this.selection = new Set(control === null ? [] : [control]); this.anchor = control; },
+  view: 'keys', status: null, icons: new Map(), collapsed: new Set(), clipboard: null, armed: null };
 const $ = (id) => document.getElementById(id);
 
 function remember(key, value) {
@@ -180,6 +187,12 @@ const controlName = (c) => CONTROL_NAMES[c] ?? `Key ${Number(c) + 1}`;
 const isKnob = (c) => KNOBS.includes(c);
 const hasScreen = (c) => SCREENS.includes(c);
 const hasDials = () => state.cfg.model === 'd200x';
+/** Controls in the order a Shift+click range runs through them. */
+const ORDER = [...KEYS, 'wide', 'side1', 'side2', ...KNOBS];
+const selectedList = () => ORDER.filter((c) => state.selection.has(c));
+/** Settings carry whole only between controls of the same kind. */
+const kindOf = (c) => (isKnob(c) ? 'knob' : c === 'wide' ? 'wide' : hasScreen(c) ? 'key' : 'side');
+const ACTION_FIELDS = ['action', 'double', 'hold', 'hold_ms', 'left', 'right', 'press_left', 'press_right'];
 
 function notify(text, bad = false) {
   const el = $('notice');
@@ -259,22 +272,92 @@ function select(control) {
   if (control !== null) focusControl(control);
 }
 
-function clearControl(control) {
-  delete page().keys[control];
-  save();
+/** Click picks one control; Ctrl+click adds or removes one, Shift+click a range. */
+function pickControl(e, control) {
+  if (e.ctrlKey || e.metaKey) {
+    const next = new Set(state.selection);
+    if (next.has(control)) next.delete(control);
+    else next.add(control);
+    state.selection = next;
+    state.anchor = control;
+  } else if (e.shiftKey && state.anchor !== null) {
+    const [from, to] = [ORDER.indexOf(state.anchor), ORDER.indexOf(control)].sort((a, b) => a - b);
+    const shown = (c) => !isBackKey(c) && document.querySelector(`.deck [data-control="${c}"]:not(.locked)`);
+    state.selection = new Set(ORDER.slice(from, to + 1).filter(shown));
+  } else {
+    return select(control);
+  }
   drawDeck();
   drawInspector();
   focusControl(control);
 }
 
-function pasteControl(control) {
-  const { binding: copied, knob: fromKnob } = state.clipboard;
-  if (fromKnob !== isKnob(control)) return notify('Knob settings only paste onto knobs, and key settings onto keys.', true);
-  page().keys[control] = structuredClone(copied);
+function clearControls(controls) {
+  for (const c of controls) delete page().keys[c];
   save();
   drawDeck();
   drawInspector();
-  focusControl(control);
+  focusControl(controls[0]);
+}
+
+function copyControls(controls) {
+  const items = controls.filter((c) => binding(c) && !isBackKey(c)).map((control) => ({ control, binding: structuredClone(binding(control)) }));
+  if (!items.length) return notify('Nothing to copy: the selection is empty.');
+  state.clipboard = items;
+  notify(items.length === 1 ? `Copied ${controlName(items[0].control)}.` : `Copied ${items.length} controls.`);
+}
+
+/** Where a copied key lands when several are pasted onto one target: same layout, shifted. */
+function shifted(items, target, control) {
+  const first = items.find((it) => KEYS.includes(it.control))?.control;
+  if (!KEYS.includes(control)) return control; // the wide screen, side buttons and knobs go back where they were
+  if (first === undefined || !KEYS.includes(target)) return control;
+  const row = Math.floor(control / 5) + Math.floor(target / 5) - Math.floor(first / 5);
+  const col = (control % 5) + (target % 5) - (first % 5);
+  const index = row * 5 + col;
+  return row >= 0 && col >= 0 && col < 5 && index < KEYS.length ? String(index) : null;
+}
+
+function pasteControls(targets) {
+  const items = state.clipboard;
+  if (!items) return;
+  let pairs;
+  if (items.length === 1) pairs = targets.map((t) => [items[0], t]);
+  else if (targets.length === 1) pairs = items.map((it) => [it, shifted(items, targets[0], it.control)]);
+  else if (targets.length === items.length) pairs = items.map((it, i) => [it, targets[i]]);
+  else return notify(`${items.length} controls were copied and ${targets.length} are selected. Select one, or as many as were copied.`, true);
+  let skipped = 0;
+  let partial = false;
+  const pasted = [];
+  for (const [item, target] of pairs) {
+    const [from, to] = [kindOf(item.control), target && kindOf(target)];
+    if (target === null || isBackKey(target) || (from === 'knob') !== (to === 'knob')) {
+      skipped++;
+      continue;
+    }
+    if (from === to) {
+      page().keys[target] = structuredClone(item.binding);
+    } else {
+      // The wide screen, keys and side buttons draw differently, so only what they do carries over.
+      const next = Object.fromEntries(Object.entries(binding(target) ?? {}).filter(([k]) => !ACTION_FIELDS.includes(k)));
+      for (const k of ACTION_FIELDS) if (item.binding[k] !== undefined) next[k] = structuredClone(item.binding[k]);
+      if (from !== 'wide' && to !== 'wide' && item.binding.label) next.label = item.binding.label;
+      if (Object.keys(next).length) page().keys[target] = next;
+      else delete page().keys[target];
+      partial = true;
+    }
+    pasted.push(target);
+  }
+  if (pasted.length) {
+    state.selection = new Set(pasted);
+    save();
+    drawDeck();
+    drawInspector();
+  }
+  const notes = [];
+  if (partial) notes.push('Only the actions carried over between the wide screen, keys and side buttons.');
+  if (skipped) notes.push(`${skipped} skipped: knob settings only go on knobs, nothing goes on a folder's Back key, and keys that would land off the deck are dropped.`);
+  if (notes.length) notify(notes.join(' '), !pasted.length);
 }
 
 function closeMenu(restoreFocus = false) {
@@ -320,12 +403,13 @@ function openMenu(at, items) {
 }
 
 function controlMenu(at, control) {
-  const b = binding(control);
+  const targets = state.selection.has(control) ? selectedList() : [control];
+  const used = targets.some((c) => binding(c));
   openMenu(at, [
-    { label: 'Copy', icon: 'copy-bold', disabled: !b, run: () => { state.clipboard = { binding: structuredClone(b), knob: isKnob(control) }; } },
-    { label: 'Paste', icon: 'clipboard-text-bold', disabled: !state.clipboard, run: () => pasteControl(control) },
+    { label: 'Copy', icon: 'copy-bold', disabled: !used, run: () => copyControls(targets) },
+    { label: 'Paste', icon: 'clipboard-text-bold', disabled: !state.clipboard, run: () => pasteControls(targets) },
     '-',
-    { label: 'Clear', icon: 'eraser-bold', danger: true, disabled: !b, run: () => clearControl(control) },
+    { label: 'Clear', icon: 'eraser-bold', danger: true, disabled: !used, run: () => clearControls(targets) },
   ]);
 }
 
@@ -361,7 +445,7 @@ function wireDrag(el, control) {
   el.addEventListener('keydown', (e) => {
     if (e.key === 'Delete') {
       e.preventDefault();
-      clearControl(control);
+      clearControls(state.selection.has(control) ? selectedList() : [control]);
     }
   });
   el.addEventListener('dragstart', (e) => {
@@ -453,9 +537,9 @@ function keyButton(control, shown) {
   if (firmware) classes.push('firmware');
   const el = h('button', {
     class: classes.join(' '),
-    'aria-pressed': String(state.selected === control),
+    'aria-pressed': String(state.selection.has(control)),
     'aria-label': `${controlName(control)}${b?.label ? `: ${b.label}` : ''}`,
-    onclick: () => (locked ? notify('A folder always keeps Back on this key.') : select(control)),
+    onclick: (e) => (locked ? notify('A folder always keeps Back on this key.') : pickControl(e, control)),
   });
   if (firmware) el.dataset.face = WIDE_DISPLAYS.find(([id]) => id === display)?.[1] ?? '';
   else {
@@ -486,8 +570,8 @@ function sideButton(control) {
   const b = binding(control);
   const el = h('button', {
     class: 'ctl side',
-    'aria-pressed': String(state.selected === control),
-    onclick: () => select(control),
+    'aria-pressed': String(state.selection.has(control)),
+    onclick: (e) => pickControl(e, control),
   }, b?.label || (b ? 'In use' : 'Empty'));
   addMarks(el, b, KEY_STATES);
   wireDrag(el, control);
@@ -498,9 +582,9 @@ function knob(control) {
   const b = binding(control);
   const el = h('button', {
     class: 'ctl knob',
-    'aria-pressed': String(state.selected === control),
+    'aria-pressed': String(state.selection.has(control)),
     'aria-label': `${controlName(control)}${b?.label ? `: ${b.label}` : ''}`,
-    onclick: () => select(control),
+    onclick: (e) => pickControl(e, control),
   });
   addMarks(el, b, KNOB_STATES);
   wireDrag(el, control);
@@ -1241,8 +1325,18 @@ function drawInspector() {
   const root = $('inspector');
   const control = state.selected;
   if (state.view !== 'keys') return root.replaceChildren();
+  if (state.selection.size > 1) {
+    const targets = selectedList();
+    return root.replaceChildren(
+      h('div', { class: 'inspector-head' }, h('h2', {}, `${targets.length} controls selected`), iconButton('x-bold', 'Close', () => select(null))),
+      h('p', { class: 'hint' }, 'Settings are edited one control at a time. Ctrl+C copies these, Ctrl+V pastes onto them, and Delete clears them.'),
+      h('div', { class: 'row' },
+        h('button', { type: 'button', onclick: () => copyControls(targets) }, 'Copy'),
+        h('button', { type: 'button', disabled: !state.clipboard, onclick: () => pasteControls(targets) }, 'Paste'),
+        h('button', { type: 'button', class: 'danger', onclick: () => clearControls(targets) }, 'Clear')));
+  }
   if (control === null) {
-    return root.replaceChildren(h('p', { class: 'panel-empty' }, 'Select a key, side button or knob to set it up.'));
+    return root.replaceChildren(h('p', { class: 'panel-empty' }, 'Select a key, side button or knob to set it up. Ctrl+click or Shift+click selects several.'));
   }
 
   const b = binding(control);
@@ -1624,9 +1718,16 @@ async function start() {
   });
   document.addEventListener('pointerdown', (e) => { if (!e.target.closest('.menu')) closeMenu(); });
   document.addEventListener('keydown', (e) => {
+    const typing = e.target.closest('input, textarea, select, [contenteditable]');
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !typing && !$('dialog').open && state.view === 'keys' && state.selection.size) {
+      const key = e.key.toLowerCase();
+      if (key === 'c') { e.preventDefault(); copyControls(selectedList()); }
+      if (key === 'v' && state.clipboard) { e.preventDefault(); pasteControls(selectedList()); }
+      return;
+    }
     if (e.key !== 'Escape') return;
     if (document.getElementById('menu')) closeMenu(true);
-    else if (!$('dialog').open && state.selected !== null) select(null);
+    else if (!$('dialog').open && state.selection.size) select(null);
   });
   state.icons = new Map(await invoke('icon_library'));
   for (const slot of document.querySelectorAll('[data-glyph]')) slot.replaceWith(icon(slot.dataset.glyph));
