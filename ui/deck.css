@@ -3,3 +3,7 @@
 .mini-key { aspect-ratio: 1; border-radius: 5px; background: #0d0e10; overflow: hidden; }
 .mini-key.wide { grid-column: span 2; aspect-ratio: auto; }
 .mini-key img { display: block; width: 100%; height: 100%; }
+.key-pick { padding: 8px; border-radius: 10px; background: var(--body); }
+.key-pick .mini-key { padding: 0; border: 0; cursor: pointer; }
+.key-pick .mini-key:hover, .key-pick .mini-key:focus-visible { outline: 2px solid var(--on-mat); outline-offset: 2px; }
+.key-pick .mini-key.marked { outline: 2px solid var(--signal); outline-offset: 2px; }

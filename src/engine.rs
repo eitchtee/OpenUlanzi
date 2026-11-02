@@ -1,5 +1,5 @@
 //! Pages, held layers and tap/hold. Pure: time and the focused window come from the caller.
-use crate::config::{Action, Binding, Config, Display, Visual, APP_LAYER, DEFAULT_PROFILE, FOLDER_BACK_KEY, HOLD_STEPS};
+use crate::config::{control_index, Action, Binding, Config, Display, KeyAt, Look, Target, Visual, APP_LAYER, DEFAULT_PROFILE, FOLDER_BACK_KEY, HOLD_STEPS};
 use crate::platform::Window;
 use crate::protocol::{Input, Knob, WIDE};
 use std::collections::HashMap;
@@ -44,6 +44,47 @@ struct Follow {
 /// (profile, page) indexes.
 type Location = (usize, usize);
 
+/// Adds a `set_look` to what earlier ones changed.
+fn merge(into: &mut Look, change: Look) {
+    into.label = change.label.or(into.label.take());
+    into.color = change.color.or(into.color.take());
+    into.background = change.background.or(into.background.take());
+    // A crop belongs to its picture, so a new picture brings its own crop or none.
+    if change.icon.is_some() {
+        (into.icon, into.icon_crop) = (change.icon, change.icon_crop);
+    }
+    if change.image.is_some() {
+        (into.image, into.image_crop) = (change.image, change.image_crop);
+    }
+}
+
+fn restyled(look: &Look, b: &Binding) -> Binding {
+    let mut b = b.clone();
+    b.label = look.label.clone().unwrap_or(b.label);
+    b.color = look.color.clone().or(b.color);
+    b.background = look.background.clone().or(b.background);
+    if let Some(icon) = &look.icon {
+        (b.icon, b.icon_crop) = (icon.clone(), look.icon_crop);
+    }
+    if let Some(image) = &look.image {
+        (b.image, b.image_crop) = (image.clone(), look.image_crop);
+    }
+    b
+}
+
+/// Ties the look changes inside a sequence to the key that started it.
+fn stamp(action: Action, key: KeyAt) -> Action {
+    let all = |list: Vec<Action>| list.into_iter().map(|a| stamp(a, key)).collect();
+    match action {
+        a @ (Action::SetLook(_) | Action::ResetLook(_)) => Action::Restyle(key, Box::new(a)),
+        Action::Sequence(list) => Action::Sequence(all(list)),
+        Action::Toggle(list) => Action::Toggle(all(list)),
+        Action::Random(list) => Action::Random(all(list)),
+        Action::OneShot(a) => Action::OneShot(Box::new(stamp(*a, key))),
+        a => a,
+    }
+}
+
 #[derive(Default)]
 struct Switch {
     accepted: bool,
@@ -71,6 +112,11 @@ pub struct Engine {
     /// A button went down since then, so its release ends the one shot.
     shot_pressed: bool,
     switches: HashMap<u8, Switch>,
+    /// Only bindings that unblock respond.
+    blocked: bool,
+    looks: HashMap<KeyAt, Look>,
+    /// The key whose action is running, if a key started it.
+    firing: Option<KeyAt>,
     now: u64,
 }
 
@@ -96,6 +142,9 @@ impl Engine {
             follow: None,
             shot_pressed: false,
             switches: HashMap::new(),
+            blocked: false,
+            looks: HashMap::new(),
+            firing: None,
             now: 0,
         }
     }
@@ -111,6 +160,8 @@ impl Engine {
         self.focused = None;
         self.follow = None;
         self.history.clear();
+        self.blocked = false; // the new config may have no key left to unblock with
+        self.looks.clear();
         self.release_all();
     }
 
@@ -195,19 +246,31 @@ impl Engine {
         opened_from.map_or(0, |(_, page)| *page)
     }
 
-    fn lookup(&self, control: u8) -> Option<(&Binding, usize)> {
+    /// The page a control's binding comes from.
+    fn place(&self, control: u8) -> Location {
         // A held page replaces the deck: its empty keys are empty, not the page underneath.
         let held = self.held.iter().rev().filter(|h| h.active).find_map(|h| h.layer);
-        let (profile, mut page) = held.unwrap_or_else(|| self.current());
-        if self.cfg.profiles[profile].pages[page].folder {
-            if control == FOLDER_BACK_KEY {
-                return Some((&self.back, profile));
-            }
-            if control > WIDE {
-                page = self.under_folder(profile); // knobs and side buttons are not the folder's
-            }
+        let (profile, page) = held.unwrap_or_else(|| self.current());
+        if control > WIDE && self.cfg.profiles[profile].pages[page].folder {
+            return (profile, self.under_folder(profile)); // knobs and side buttons are not the folder's
+        }
+        (profile, page)
+    }
+
+    fn lookup(&self, control: u8) -> Option<(&Binding, usize)> {
+        let (profile, page) = self.place(control);
+        if control == FOLDER_BACK_KEY && self.cfg.profiles[profile].pages[page].folder {
+            return Some((&self.back, profile));
         }
         self.cfg.profiles[profile].pages[page].keys.get(&control).map(|b| (b, profile))
+    }
+
+    /// The binding a press reaches: while blocked, only one that can unblock.
+    fn reachable(&self, control: u8) -> Option<(Binding, usize)> {
+        let (b, owner) = self.lookup(control)?;
+        let slots = [&b.action, &b.double, &b.hold, &b.left, &b.right, &b.press_left, &b.press_right];
+        let unblocks = slots.iter().any(|a| a.as_ref().is_some_and(Action::unblocks));
+        (!self.blocked || unblocks).then(|| (b.clone(), owner))
     }
 
     fn move_to(&mut self, (profile, page): Location) {
@@ -215,20 +278,42 @@ impl Engine {
         self.pages[profile] = page;
     }
 
-    fn step_page(&mut self, forward: bool) {
+    /// Without `wrap`, there is no page past the last one or before the first.
+    fn step_page(&mut self, forward: bool, wrap: bool) {
         let (profile, current) = self.current();
         let pages = &self.cfg.profiles[profile].pages;
         let n = pages.len();
-        let offset = |i| if forward { i } else { n - i };
-        let candidates = (1..n).map(|i| (current + offset(i)) % n);
+        let candidates: Vec<usize> = match (wrap, forward) {
+            (true, true) => (1..n).map(|i| (current + i) % n).collect(),
+            (true, false) => (1..n).map(|i| (current + n - i) % n).collect(),
+            (false, true) => (current + 1..n).collect(),
+            (false, false) => (0..current).rev().collect(),
+        };
         if let Some(p) = candidates.into_iter().find(|p| !pages[*p].hidden && !pages[*p].folder) {
             self.pages[profile] = p;
+        }
+    }
+
+    /// Runs what a button did, or a step of a sequence: while blocked, only what unblocks.
+    fn fire_input(&mut self, action: Option<Action>, owner: usize, control: Option<u8>, out: &mut Vec<Action>) {
+        if !self.blocked || action.as_ref().is_some_and(Action::unblocks) {
+            self.firing = control.map(|c| (self.place(c), c));
+            self.fire(action, owner, out);
+            self.firing = None;
         }
     }
 
     fn fire(&mut self, action: Option<Action>, owner: usize, out: &mut Vec<Action>) {
         match action {
             None => {}
+            Some(Action::BlockInput) => self.blocked = true,
+            Some(Action::Restyle(origin, change)) => self.restyle(origin, *change),
+            Some(change @ (Action::SetLook(_) | Action::ResetLook(_))) => {
+                if let Some(origin) = self.firing {
+                    self.restyle(origin, change);
+                }
+            }
+            Some(Action::UnblockInput) => self.blocked = false,
             Some(Action::Page(p)) => {
                 if let Some(page) = self.cfg.profiles[owner].page_index(&p) {
                     self.history.push(self.current());
@@ -275,8 +360,8 @@ impl Engine {
                     }
                 }
             }
-            Some(Action::NextPage) => self.step_page(true),
-            Some(Action::PrevPage) => self.step_page(false),
+            Some(Action::NextPage { wrap }) => self.step_page(true, wrap),
+            Some(Action::PrevPage { wrap }) => self.step_page(false, wrap),
             Some(Action::Toggle(list)) if !list.is_empty() => {
                 let turn = self.toggles.entry(format!("{list:?}")).or_default();
                 let action = list[*turn % list.len()].clone();
@@ -287,16 +372,58 @@ impl Engine {
                 let nanos = std::time::SystemTime::UNIX_EPOCH.elapsed().map_or(0, |d| d.subsec_nanos());
                 self.fire(Some(list[nanos as usize % list.len()].clone()), owner, out);
             }
-            Some(a) => out.push(a),
+            Some(a) => out.push(match self.firing {
+                Some(key) => stamp(a, key),
+                None => a,
+            }),
+        }
+    }
+
+    /// The key a look action means, seen from the key that ran it. Unknown names change nothing.
+    fn target(&self, ((profile, page), control): KeyAt, t: &Target) -> Option<KeyAt> {
+        let to = match &t.profile {
+            Some(name) => self.cfg.profiles.iter().position(|p| p.name == *name)?,
+            None => profile,
+        };
+        let page = match &t.page {
+            Some(name) => self.cfg.profiles[to].page_index(name)?,
+            None if to == profile => page,
+            None => 0,
+        };
+        let control = match &t.key {
+            Some(name) => control_index(name)?,
+            None => control,
+        };
+        Some(((to, page), control))
+    }
+
+    fn restyle(&mut self, origin: KeyAt, change: Action) {
+        match change {
+            Action::SetLook(look) => {
+                if let Some(key) = self.target(origin, &look.target()) {
+                    merge(self.looks.entry(key).or_default(), look);
+                }
+            }
+            Action::ResetLook(t) => {
+                if let Some(key) = self.target(origin, &t) {
+                    self.looks.remove(&key);
+                }
+            }
+            _ => {}
         }
     }
 
     /// Runs a step that arrived from a sequence, returning what the runtime must carry out.
     // shortcut: page steps resolve in the active profile, not the key's; pass the owner along if
     // a sequence ever has to open a page while held from another profile.
-    pub fn perform(&mut self, action: Action) -> Vec<Action> {
+    /// `blocker`: the step's sequence blocks input itself, so it still finishes.
+    pub fn perform(&mut self, action: Action, blocker: bool) -> Vec<Action> {
         let mut out = Vec::new();
-        self.fire(Some(action), self.profile, &mut out);
+        if blocker {
+            self.fire(Some(action), self.profile, &mut out);
+        } else {
+            self.fire_input(Some(action), self.profile, None, &mut out);
+        }
         out
     }
 
@@ -314,7 +441,7 @@ impl Engine {
     fn resolve_click(&mut self, control: u8, out: &mut Vec<Action>) -> bool {
         let Some(click) = self.pending.take() else { return false };
         let double = click.control == control;
-        self.fire(if double { click.double } else { click.action }, click.owner, out);
+        self.fire_input(if double { click.double } else { click.action }, click.owner, Some(click.control), out);
         double
     }
 
@@ -328,7 +455,7 @@ impl Engine {
         if self.resolve_click(control, out) {
             return;
         }
-        let Some((binding, owner)) = self.lookup(control).map(|(b, o)| (b.clone(), o)) else { return };
+        let Some((binding, owner)) = self.reachable(control) else { return };
         let Some(hold) = binding.hold.clone() else {
             return self.click(control, binding, owner, now, out);
         };
@@ -348,7 +475,7 @@ impl Engine {
             let (action, double) = (binding.action, binding.double);
             self.pending = Some(PendingClick { control, action, double, owner, at: now });
         } else {
-            self.fire(binding.action, owner, out);
+            self.fire_input(binding.action, owner, Some(control), out);
         }
     }
 
@@ -403,14 +530,14 @@ impl Engine {
                 if gesture == Knob::Click {
                     self.shot_pressed |= self.return_to.is_some();
                     if !self.resolve_click(index, &mut out) {
-                        if let Some((b, owner)) = self.lookup(index).map(|(b, o)| (b.clone(), o)) {
+                        if let Some((b, owner)) = self.reachable(index) {
                             self.click(index, b, owner, now, &mut out);
                         }
                     }
                     self.finish_one_shot();
                     return out;
                 }
-                let found = self.lookup(index).map(|(b, owner)| {
+                let found = self.reachable(index).map(|(b, owner)| {
                     let action = match gesture {
                         Knob::Click => None, // handled above
                         Knob::Left => b.left.clone(),
@@ -421,7 +548,7 @@ impl Engine {
                     (action, owner)
                 });
                 if let Some((action, owner)) = found {
-                    self.fire(action, owner, &mut out);
+                    self.fire_input(action, owner, Some(index), &mut out);
                 }
             }
         }
@@ -456,8 +583,8 @@ impl Engine {
         for i in done {
             self.held[i].active = true;
             if let Some(action) = self.held[i].run.take() {
-                let owner = self.held[i].owner;
-                self.fire(Some(action), owner, &mut out);
+                let (owner, control) = (self.held[i].owner, self.held[i].control);
+                self.fire_input(Some(action), owner, Some(control), &mut out);
             }
         }
         out
@@ -478,6 +605,8 @@ impl Engine {
         (0..=WIDE)
             .map(|i| {
                 let binding = self.lookup(i).map(|(b, _)| b);
+                let styled = self.looks.get(&(self.place(i), i)).zip(binding).map(|(look, b)| restyled(look, b));
+                let binding = styled.as_ref().or(binding);
                 let mut visual = binding.map_or_else(|| self.cfg.blank(), |b| self.cfg.visual(b));
                 if i == WIDE {
                     visual.display = self.cfg.wide_display(binding);
@@ -1322,9 +1451,118 @@ mod tests {
         assert_eq!(key(&mut e, 4, true, 100), vec![]);
         assert_eq!(label(&e, 3), "layer");
         assert_eq!(e.view().len(), 14);
-        e.step_page(true);
+        e.step_page(true, true);
         assert_eq!(label(&e, 3), "base", "hidden page is skipped when wrapping around");
-        e.step_page(false);
+        e.step_page(false, true);
         assert_eq!(label(&e, 3), "layer", "and when going backwards");
+    }
+
+    #[test]
+    fn blocked_deck_answers_only_the_unblock_key() {
+        let cfg = r#"
+            [[page]]
+            name = "main"
+            [page.keys.0]
+            action = "block_input"
+            hold = "unblock_input"
+            [page.keys.1]
+            action = { open = "one" }
+        "#;
+        let mut e = Engine::new(Config::parse(cfg).unwrap());
+        key(&mut e, 0, true, 100);
+        key(&mut e, 0, false, 150);
+        assert_eq!(key(&mut e, 1, true, 300), vec![], "blocked");
+        key(&mut e, 1, false, 350);
+        key(&mut e, 0, true, 500);
+        key(&mut e, 0, false, 550);
+        assert_eq!(key(&mut e, 1, true, 700), vec![], "a tap of the lock key keeps it blocked");
+        key(&mut e, 1, false, 750);
+        let held = 1000 + e.cfg.hold_action_ms;
+        key(&mut e, 0, true, 1000);
+        e.tick(held, &none);
+        key(&mut e, 0, false, held + 50);
+        assert_eq!(key(&mut e, 1, true, 5000), open("one"), "holding unblocks");
+        key(&mut e, 1, false, 5050);
+        e.perform(Action::BlockInput, true);
+        assert_eq!(e.perform(Action::Open("next".into()), true), open("next"), "a sequence that blocks still finishes");
+        assert_eq!(e.perform(Action::Open("other".into()), false), vec![], "any other sequence is blocked");
+        assert_eq!(key(&mut e, 1, true, 6000), vec![]);
+    }
+
+    #[test]
+    fn a_key_changes_its_own_look_until_reload() {
+        let cfg = r##"
+            [[page]]
+            name = "main"
+            [page.keys.0]
+            label = "Off"
+            action = { toggle = [{ set_look = { label = "On" } }, { sequence = [{ set_look = { label = "Off" } }, { set_look = { color = "#ff0000" } }] }] }
+            [page.keys.1]
+            label = "other"
+        "##;
+        let mut e = Engine::new(Config::parse(cfg).unwrap());
+        key(&mut e, 0, true, 100);
+        key(&mut e, 0, false, 150);
+        assert_eq!(label(&e, 0), "On");
+        assert_eq!(label(&e, 1), "other");
+        let Action::Sequence(steps) = key(&mut e, 0, true, 300).remove(0) else { panic!("a sequence") };
+        for step in steps {
+            assert_eq!(e.perform(step, false), vec![], "look changes end in the engine");
+        }
+        assert_eq!(label(&e, 0), "Off", "a sequence changes the key that started it");
+        assert_eq!(e.view()[0].1.color, "#ff0000");
+        e.reload(e.cfg.clone());
+        assert_eq!(e.view()[0].1.color, Config::parse(cfg).unwrap().color);
+    }
+
+    #[test]
+    fn look_actions_reach_keys_on_other_pages_and_reset() {
+        let cfg = r##"
+            [[page]]
+            name = "main"
+            [page.keys.0]
+            action = { set_look = { page = "second", key = "1", label = "far", image = "x.png", image_crop = [0.5, 0, 0.5, 1] } }
+            [page.keys.2]
+            action = { reset_look = { page = "second", key = "1" } }
+            [page.keys.3]
+            action = { set_look = { page = "nope", label = "lost" } }
+            [[page]]
+            name = "second"
+            [page.keys.1]
+            label = "near"
+        "##;
+        let mut e = Engine::new(Config::parse(cfg).unwrap());
+        key(&mut e, 0, true, 100);
+        key(&mut e, 0, false, 150);
+        key(&mut e, 3, true, 200);
+        key(&mut e, 3, false, 250);
+        assert_eq!(label(&e, 1), "", "the key on this page is untouched");
+        e.perform(Action::Page("second".into()), false);
+        assert_eq!(label(&e, 1), "far");
+        assert_eq!(e.view()[1].1.image, "x.png");
+        assert_eq!(e.view()[1].1.image_crop, Some(crate::config::Crop([0.5, 0.0, 0.5, 1.0])));
+        e.perform(Action::Back, false);
+        key(&mut e, 2, true, 300);
+        e.perform(Action::Page("second".into()), false);
+        assert_eq!(label(&e, 1), "near");
+    }
+
+    #[test]
+    fn page_steps_wrap_unless_told_not_to() {
+        let cfg = r#"
+            [[page]]
+            name = "one"
+            [page.keys.0]
+            action = { prev_page = { wrap = false } }
+            [page.keys.1]
+            action = "prev_page"
+            [[page]]
+            name = "two"
+        "#;
+        let mut e = Engine::new(Config::parse(cfg).unwrap());
+        key(&mut e, 0, true, 100);
+        assert_eq!(e.page_name(), "one", "no page before the first");
+        key(&mut e, 1, true, 200);
+        assert_eq!(e.page_name(), "two", "the plain name wraps around");
     }
 }

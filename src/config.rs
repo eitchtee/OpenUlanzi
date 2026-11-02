@@ -16,8 +16,9 @@ pub const DEFAULT_PROFILE: &str = "@default";
 /// A folder's Back button always sits on this key.
 pub const FOLDER_BACK_KEY: u8 = 0;
 
+// The derived (de)serializers are wrapped below, so `"next_page"` stays a plain string.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[serde(remote = "Self", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
     /// `ctrl+shift+f13`, `volume_up`, `vkea`, ...
     Hotkey(String),
@@ -35,8 +36,26 @@ pub enum Action {
     /// profile, if it has one, and `@default` is the default profile.
     Profile(String),
     Back,
-    NextPage,
-    PrevPage,
+    /// Changes how a key looks until the config reloads. Fields left out stay as they are.
+    SetLook(Look),
+    /// Puts a key changed by `set_look` back to how the config draws it.
+    ResetLook(Target),
+    /// `set_look` or `reset_look` from a sequence, tied to the key that started it.
+    #[serde(skip)]
+    Restyle(KeyAt, Box<Action>),
+    /// Ignores every button until one bound to `unblock_input` runs it.
+    BlockInput,
+    UnblockInput,
+    /// Without `wrap`, the last page goes on to the first and the other way round. Written
+    /// `"next_page"` when it wraps, else `{ next_page = { wrap = false } }`.
+    NextPage {
+        #[serde(default = "default_true")]
+        wrap: bool,
+    },
+    PrevPage {
+        #[serde(default = "default_true")]
+        wrap: bool,
+    },
     /// Switches to the focused app's profile, and returns to where it started when that app loses
     /// focus. With `others`, moving to another app with a profile follows it instead.
     FollowApp {
@@ -75,6 +94,80 @@ pub enum Action {
         #[serde(default)]
         params: BTreeMap<String, String>,
     },
+}
+
+impl Serialize for Action {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Action::NextPage { wrap: true } => s.serialize_str("next_page"),
+            Action::PrevPage { wrap: true } => s.serialize_str("prev_page"),
+            a => Action::serialize(a, s),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Action {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        // JSON's value, not TOML's: the editor sends left-out fields as null, which TOML lacks.
+        let value = serde_json::Value::deserialize(d)?;
+        match value.as_str() {
+            Some("next_page") => Ok(Action::NextPage { wrap: true }),
+            Some("prev_page") => Ok(Action::PrevPage { wrap: true }),
+            _ => Action::deserialize(value).map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+/// A key of a page: ((profile, page), control).
+pub type KeyAt = ((usize, usize), u8);
+
+/// The key a look action changes. What is left out is the key that runs it: its profile, and its
+/// page while the profile is the same, otherwise the profile's first page.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Target {
+    pub profile: Option<String>,
+    pub page: Option<String>,
+    pub key: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Look {
+    pub label: Option<String>,
+    pub icon: Option<String>,
+    pub color: Option<String>,
+    pub background: Option<String>,
+    pub image: Option<String>,
+    /// Goes with `icon` and `image` from the same look; a new picture without one shows whole.
+    pub icon_crop: Option<Crop>,
+    pub image_crop: Option<Crop>,
+    // Inline rather than a nested table, which serde cannot flatten next to deny_unknown_fields.
+    pub profile: Option<String>,
+    pub page: Option<String>,
+    pub key: Option<String>,
+}
+
+impl Look {
+    pub fn target(&self) -> Target {
+        Target { profile: self.profile.clone(), page: self.page.clone(), key: self.key.clone() }
+    }
+}
+
+impl Action {
+    /// Is `target` or runs it as one of its steps.
+    pub fn runs(&self, target: &Action) -> bool {
+        match self {
+            a if a == target => true,
+            Action::OneShot(a) => a.runs(target),
+            Action::Sequence(list) | Action::Toggle(list) | Action::Random(list) => list.iter().any(|a| a.runs(target)),
+            _ => false,
+        }
+    }
+
+    pub fn unblocks(&self) -> bool {
+        self.runs(&Action::UnblockInput)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -412,7 +505,7 @@ pub struct Config {
 }
 
 /// Controls as named in the config: `0`-`12`, `wide`, `side1-2`, `knob1-3`.
-fn control_index(name: &str) -> Option<u8> {
+pub fn control_index(name: &str) -> Option<u8> {
     match name {
         "wide" => Some(WIDE),
         "side1" => Some(15),
@@ -444,6 +537,10 @@ fn check_action(action: &Action, pages: &[String], profiles: &[String]) -> Resul
         Action::OneShot(inner) => check_action(inner, pages, profiles),
         Action::Sequence(list) | Action::Toggle(list) | Action::Random(list) => {
             list.iter().try_for_each(|a| check_action(a, pages, profiles))
+        }
+        Action::SetLook(look) => {
+            [&look.color, &look.background].into_iter().flatten().try_for_each(|c| check_color(c))?;
+            [&look.icon_crop, &look.image_crop].into_iter().flatten().try_for_each(Crop::check)
         }
         _ => Ok(()),
     }
@@ -675,6 +772,14 @@ mod tests {
     }
 
     #[test]
+    fn actions_from_the_editor_may_hold_nulls() {
+        let json = r#"{ "set_look": { "label": "x", "icon": null, "key": null } }"#;
+        let action: Action = serde_json::from_str(json).unwrap();
+        assert_eq!(action, Action::SetLook(Look { label: Some("x".into()), ..Default::default() }));
+        assert_eq!(serde_json::from_str::<Action>(r#""next_page""#).unwrap(), Action::NextPage { wrap: true });
+    }
+
+    #[test]
     fn example_config_is_valid() {
         let cfg = Config::parse(include_str!("../examples/default.toml")).unwrap();
         assert!(cfg.profiles.len() >= 2);
@@ -687,7 +792,7 @@ mod tests {
         cfg.save(&path).unwrap();
         let back = Config::load(&path).unwrap();
         assert_eq!(serde_json::to_string(&cfg).unwrap(), serde_json::to_string(&back).unwrap());
-        assert_eq!(back.profiles[0].pages[0].keys[&12].action, Some(Action::NextPage));
+        assert_eq!(back.profiles[0].pages[0].keys[&12].action, Some(Action::NextPage { wrap: true }));
     }
 
     #[test]

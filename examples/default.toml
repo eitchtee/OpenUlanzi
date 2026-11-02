@@ -8,8 +8,12 @@
 #
 # action = { hotkey = "ctrl+shift+f13" } | { open = "path, folder, URL or command, like the Run dialog" }
 #        | { text = "types this" } | { close = "app.exe" } | { page = "name" } | "back"
-#        | { profile = "name" } | "next_page" | "prev_page" | { brightness = -10 } | { play_sound = "file" } | "stop_sound"
-#        | { app_volume = 5 } | "app_volume_reset"
+#        | { profile = "name" } | "next_page" | "prev_page" (wrap around; { next_page = { wrap = false } } stops at the end) | { brightness = -10 } | { play_sound = "file" } | "stop_sound"
+#        | { app_volume = 5 } | "app_volume_reset" | "block_input" | "unblock_input"
+#        | { set_look = { label = "On", icon = "ph:star-fill", color = "#ffcc00", background = "#000000", image = "on.png" } }
+#          changes a key until the config reloads; every field is optional and left-out ones stay
+#        | { reset_look = {} } puts it back. Both take profile, page and key (like key = "3") to
+#          change another key; left out, they mean the key that runs them
 #        | { follow_app = { others = false } } opens the focused app's profile until that app loses
 #          focus; others = true moves on to other apps that have a profile
 #        | { one_shot = { page = "name" } } returns after the next button press; also takes profile

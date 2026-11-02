@@ -41,6 +41,8 @@ const ACTION_GROUPS = [
     { name: 'Scroll left', icon: 'arrow-line-left-bold', apply: (b) => { b.action = { scroll_left: 3 }; } },
     { name: 'Scroll right', icon: 'arrow-line-right-bold', apply: (b) => { b.action = { scroll_right: 3 }; } },
     { name: 'Deck brightness', icon: 'sun-bold', apply: (b) => { b.action = { brightness: 10 }; } },
+    { name: 'Block input', icon: 'lock-bold', apply: (b) => { b.action = 'block_input'; b.icon ||= 'ph:lock-bold'; } },
+    { name: 'Unblock input', icon: 'lock-open-bold', apply: (b) => { b.action = 'unblock_input'; } },
   ]],
   ['Media', [
     { name: 'Play or pause', icon: 'play-pause-bold', apply: (b) => media(b, 'play_pause', 'Play', 'play-pause-fill') },
@@ -61,6 +63,10 @@ const ACTION_GROUPS = [
     { name: 'Vertical scroll knob', icon: 'arrows-down-up-bold', knob: true, apply: (b) => { b.left = { scroll_up: 3 }; b.right = { scroll_down: 3 }; b.label ||= 'Scroll'; } },
     { name: 'Horizontal scroll knob', icon: 'arrows-left-right-bold', knob: true, apply: (b) => { b.left = { scroll_left: 3 }; b.right = { scroll_right: 3 }; b.label ||= 'Scroll'; } },
     { name: 'Brightness knob', icon: 'sun-bold', knob: true, apply: (b) => { b.left = { brightness: -10 }; b.right = { brightness: 10 }; b.label ||= 'Brightness'; } },
+  ]],
+  ['Key look', [
+    { name: 'Change look', icon: 'palette-bold', apply: (b) => { b.action = { set_look: {} }; } },
+    { name: 'Reset look', icon: 'arrow-counter-clockwise-bold', apply: (b) => { b.action = { reset_look: {} }; } },
   ]],
   ['Several actions', [
     { name: 'Sequence', icon: 'stack-bold', apply: (b) => { b.action = { sequence: [] }; } },
@@ -628,6 +634,8 @@ function forEachAction(pages, visit) {
 }
 
 const allPages = () => state.cfg.profile.flatMap((p) => p.page);
+/** The key a Change look or Reset look points at, as stored: left-out parts mean "this one". */
+const lookTarget = (a) => a.set_look ?? a.reset_look;
 
 function usesOfPage(name) {
   const uses = [];
@@ -647,6 +655,12 @@ function renamePage(name) {
     if (a.page === old) a.page = name;
     if (a.show === old) a.show = name;
   });
+  for (const owner of state.cfg.profile) {
+    forEachAction(owner.page, (a) => {
+      const t = lookTarget(a);
+      if (t?.page === old && (t.profile ?? owner.name) === profile().name) t.page = name;
+    });
+  }
   p.name = name;
   save();
   draw();
@@ -921,6 +935,42 @@ function iconPicker(onPick) {
   search.focus();
 }
 
+/** Shows the deck of any page to click the key to change. Calls back with only what differs from here. */
+function keyPicker(current, onPick) {
+  let chosen = state.cfg.profile.find((p) => p.name === current.profile) ?? profile();
+  let shown = chosen.page.find((p) => p.name === current.page) ?? (chosen === profile() && current.page == null ? page() : chosen.page[0]);
+  const profiles = h('select', { 'aria-label': 'Profile' }, ...state.cfg.profile.map((p) => h('option', { value: p.name, selected: p === chosen }, p.name)));
+  const pages = h('select', { 'aria-label': 'Page' });
+  const grid = h('div', { class: 'mini-deck key-pick' });
+  const pick = (control) => {
+    $('dialog').close();
+    const here = chosen === profile();
+    onPick({
+      profile: here ? undefined : chosen.name,
+      page: here && shown === page() ? undefined : shown.name,
+      key: here && shown === page() && control === state.selected ? undefined : control,
+    });
+  };
+  const refresh = () => {
+    pages.replaceChildren(...chosen.page.map((p) => h('option', { value: p.name, selected: p === shown }, p.name)));
+    grid.replaceChildren(...SCREENS.map((c) => {
+      const marked = c === (current.key ?? state.selected) && shown.name === (current.page ?? page().name) && chosen.name === (current.profile ?? profile().name);
+      const cell = h('button', { type: 'button', class: `mini-key${c === 'wide' ? ' wide' : ''}${marked ? ' marked' : ''}`, title: controlName(c), 'aria-label': controlName(c), onclick: () => pick(c) });
+      keyImage(visualOf(shown.keys[c], c), c === 'wide').then((url) => cell.replaceChildren(h('img', { src: url, alt: '' })));
+      return cell;
+    }));
+  };
+  profiles.onchange = () => { chosen = state.cfg.profile.find((p) => p.name === profiles.value); shown = chosen.page[0]; refresh(); };
+  pages.onchange = () => { shown = chosen.page.find((p) => p.name === pages.value); refresh(); };
+  openDialog(
+    dialogHead('Choose the key to change'),
+    section('Page', h('div', { class: 'row' }, profiles, pages)),
+    section('Key', grid),
+    dialogFoot(h('button', { class: 'plain', onclick: () => $('dialog').close() }, 'Cancel')),
+  );
+  refresh();
+}
+
 const WIDE_ASPECT = 458 / 196;
 const PICTURE = /\.(png|jpe?g|gif|webp)$/i;
 
@@ -1051,7 +1101,7 @@ const ACTION_TYPES = [
   ['none', 'Nothing'], ['hotkey', 'Hotkey'], ['text', 'Type text'], ['open', 'Open app, file or website'], ['close', 'Close app'],
   ['page', 'Open page'], ['back', 'Go back'], ['profile', 'Switch profile'], ['next_page', 'Next page'], ['prev_page', 'Previous page'],
   ['scroll_up', 'Scroll up'], ['scroll_down', 'Scroll down'], ['scroll_left', 'Scroll left'], ['scroll_right', 'Scroll right'],
-  ['brightness', 'Change deck brightness'], ['app_volume', 'Change app volume'], ['app_volume_reset', 'Reset app volume'], ['play_sound', 'Play sound file'], ['stop_sound', 'Stop sound'],
+  ['set_look', 'Change look'], ['reset_look', 'Reset look'], ['block_input', 'Block input'], ['unblock_input', 'Unblock input'], ['brightness', 'Change deck brightness'], ['app_volume', 'Change app volume'], ['app_volume_reset', 'Reset app volume'], ['play_sound', 'Play sound file'], ['stop_sound', 'Stop sound'],
   ['sequence', 'Sequence'], ['toggle', 'Toggle between actions'], ['random', 'Random action'],
   ['obs_toggle_record', 'OBS: Record'], ['obs_toggle_record_pause', 'OBS: Pause recording'], ['obs_toggle_stream', 'OBS: Stream'],
   ['obs_toggle_virtual_cam', 'OBS: Virtual camera'], ['obs_toggle_replay_buffer', 'OBS: Replay buffer'], ['obs_save_replay', 'OBS: Save replay'],
@@ -1264,6 +1314,46 @@ function actionEditor(label, action, commit, options = {}) {
   } else if (type === 'app_volume') {
     const input = h('input', { type: 'number', value: action.app_volume, min: -100, max: 100, onchange: () => commit({ app_volume: Number(input.value) || 0 }) });
     parts.push(field('Change by (%)', input, 'Applies to the window that has focus.'));
+  } else if (type === 'set_look' || type === 'reset_look') {
+    // Values come back from the app as null when left out, so test with == null.
+    const data = action[type];
+    // Another profile has other pages, so picking one starts over at its first page.
+    const change = (key, value) => commit({ [type]: { ...data, ...(key === 'profile' && { page: undefined }), [key]: value ?? undefined } });
+    const where = data.key == null && data.page == null && data.profile == null ? 'This key'
+      : [controlName(data.key ?? state.selected), data.page ?? (data.profile == null ? null : 'first page'), data.profile].filter((x) => x != null).join(' · ');
+    const retarget = (t) => commit({ [type]: { ...data, profile: t.profile, page: t.page, key: t.key } });
+    parts.push(field('Key to change', h('div', { class: 'row' },
+      h('button', { type: 'button', onclick: () => keyPicker({ profile: data.profile ?? undefined, page: data.page ?? undefined, key: data.key ?? undefined }, retarget) }, where),
+      where === 'This key' ? null : h('button', { type: 'button', class: 'plain', onclick: () => retarget({}) }, 'Use this key'))));
+    if (type === 'set_look') {
+      const label = h('input', { type: 'text', value: data.label ?? '', placeholder: 'Keep the label', onchange: () => change('label', label.value || undefined) });
+      parts.push(field('Label', label));
+      // Unticked colours and an empty tile leave that part of the key as it is.
+      const swatch = (key, title, fallback) => {
+        const input = h('input', { type: 'color', value: data[key] ?? fallback, disabled: data[key] == null, 'aria-label': title, onchange: () => change(key, input.value) });
+        const on = h('input', { type: 'checkbox', checked: data[key] != null, 'aria-label': `Change ${title.toLowerCase()}`, onchange: () => change(key, on.checked ? input.value : undefined) });
+        return h('label', {}, on, input, title);
+      };
+      // A crop belongs to its picture, so picking another picture drops it.
+      const picture = (key, crop) => (value) => commit({ [type]: { ...data, [key]: value ?? undefined, [crop]: undefined } });
+      const wide = (data.key ?? (data.page == null && data.profile == null ? state.selected : null)) === 'wide';
+      parts.push(h('div', { class: 'looks' }, iconTile(data.icon ?? undefined, picture('icon', 'icon_crop'), 'Keep the current icon', { value: data.icon_crop, set: (crop) => change('icon_crop', crop) }),
+        h('div', { class: 'swatches' }, swatch('color', 'Icon', state.cfg.color), swatch('background', 'Background', state.cfg.background))));
+      const image = h('input', { type: 'text', value: data.image ?? '', placeholder: 'Keep the image', 'aria-label': 'Background image', onchange: () => picture('image', 'image_crop')(image.value || undefined) });
+      const crop = data.image ? h('button', { type: 'button', onclick: () => cropPicker(data.image, wide ? WIDE_ASPECT : 1, data.image_crop, (c) => change('image_crop', c)) }, 'Crop') : null;
+      parts.push(field('Background image', h('div', { class: 'row' }, image, browseButton(['png', 'jpg', 'jpeg', 'gif', 'webp'], picture('image', 'image_crop')), crop)));
+      parts.push(h('p', { class: 'hint' }, 'Lasts until the config is saved again. Anything left empty or unticked stays as it is.'));
+    } else {
+      parts.push(h('p', { class: 'hint' }, 'Undoes every Change look on that key.'));
+    }
+  } else if (type === 'next_page' || type === 'prev_page') {
+    // Wrapping is the default and is saved as the plain name.
+    const box = h('input', { type: 'checkbox', checked: action[type]?.wrap !== false, onchange: () => commit(box.checked ? type : { [type]: { wrap: false } }) });
+    parts.push(h('label', { class: 'check' }, box, type === 'next_page' ? 'After the last page, go to the first' : 'Before the first page, go to the last'));
+  } else if (type === 'block_input') {
+    parts.push(h('p', { class: 'hint' }, 'The deck ignores every button until one with Unblock input runs it, e.g. this key when held.'));
+  } else if (type === 'unblock_input') {
+    parts.push(h('p', { class: 'hint' }, 'Works even while the deck is blocked.'));
   } else if (type === 'app_volume_reset') {
     parts.push(h('p', { class: 'hint' }, 'Sets the focused app to 100%, so it follows the system volume again.'));
   } else if (type === 'brightness') {
@@ -1467,7 +1557,11 @@ function drawInspector() {
 function renameProfile(target, name) {
   if (!name || name === target.name) return;
   if (state.cfg.profile.some((p) => p.name === name)) return notify(`A profile named ${name} already exists.`, true);
-  forEachAction(allPages(), (a) => { if (a.profile === target.name) a.profile = name; });
+  forEachAction(allPages(), (a) => {
+    if (a.profile === target.name) a.profile = name;
+    const t = lookTarget(a);
+    if (t?.profile === target.name) t.profile = name;
+  });
   target.name = name;
   save();
   draw();

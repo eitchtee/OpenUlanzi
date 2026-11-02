@@ -70,7 +70,8 @@ struct App<F> {
     wake: Arc<AtomicBool>,
     on_status: F,
     published: Option<Status>,
-    steps: (Sender<Action>, Receiver<Action>),
+    /// Steps of running sequences, and whether their sequence blocks input.
+    steps: (Sender<(Action, bool)>, Receiver<(Action, bool)>),
     volume: Option<VolumePopup>,
     obs: Obs,
     plugins: Arc<Plugins>,
@@ -158,11 +159,14 @@ impl<F: FnMut(&Status)> App<F> {
             Action::Sequence(steps) => {
                 // Delays must not stall the deck, so only the waiting happens on this thread.
                 let (steps, sender) = (steps.clone(), self.steps.0.clone());
+                // shortcut: a sequence nested in a blocking one does not inherit it; pass the flag
+                // along if nested sequences ever need to run past a block.
+                let blocker = steps.iter().any(|s| s.runs(&Action::BlockInput));
                 std::thread::spawn(move || {
                     for step in steps {
                         if let Action::Delay(ms) = step {
                             std::thread::sleep(Duration::from_millis(ms));
-                        } else if sender.send(step).is_err() {
+                        } else if sender.send((step, blocker)).is_err() {
                             return;
                         }
                     }
@@ -330,8 +334,8 @@ impl<F: FnMut(&Status)> App<F> {
     }
 
     fn run_steps(&mut self, deck: &mut Deck) -> Result<()> {
-        while let Ok(step) = self.steps.1.try_recv() {
-            for action in self.engine.perform(step) {
+        while let Ok((step, blocker)) = self.steps.1.try_recv() {
+            for action in self.engine.perform(step, blocker) {
                 self.run_action(deck, action)?;
             }
         }
