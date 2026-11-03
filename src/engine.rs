@@ -7,6 +7,9 @@ use std::collections::HashMap;
 const DEBOUNCE_MS: u64 = 25;
 /// A quick tap should not cost a screen update, so the hold border starts after this.
 const BORDER_DELAY_MS: u64 = 120;
+/// The deck can report a held key as briefly up when another key goes down, so a held page
+/// outlives its key by this much and picks up again if the key comes back.
+const HOLD_GRACE_MS: u64 = 150;
 
 struct Held {
     control: u8,
@@ -21,6 +24,8 @@ struct Held {
     since: u64,
     /// The hold has been decided; a release no longer counts as a tap.
     active: bool,
+    /// When the key went up, for a held page still inside its grace time.
+    released: Option<u64>,
 }
 
 /// A first click waiting to learn whether a second one follows.
@@ -449,6 +454,11 @@ impl Engine {
         self.shot_pressed |= self.return_to.is_some();
         // Another key during a hold-tap means the user meant hold: the chord uses that page. A
         // hold action keeps counting, because it has to be held on purpose.
+        self.end_grace(now);
+        if let Some(h) = self.held.iter_mut().find(|h| h.control == control && h.released.is_some()) {
+            h.released = None; // the same hold, the key only glitched up
+            return;
+        }
         for h in self.held.iter_mut().filter(|h| !h.timed) {
             h.active = true;
         }
@@ -467,7 +477,7 @@ impl Engine {
             action => (None, Some(action), false),
         };
         let timed = run.is_some();
-        self.held.push(Held { control, binding, owner, layer, timed, run, since: now, active });
+        self.held.push(Held { control, binding, owner, layer, timed, run, since: now, active, released: None });
     }
 
     fn click(&mut self, control: u8, binding: Binding, owner: usize, now: u64, out: &mut Vec<Action>) {
@@ -480,7 +490,11 @@ impl Engine {
     }
 
     fn release(&mut self, control: u8, now: u64, out: &mut Vec<Action>) {
-        if let Some(i) = self.held.iter().position(|h| h.control == control) {
+        if let Some(i) = self.held.iter().position(|h| h.control == control && h.released.is_none()) {
+            if self.held[i].active && !self.held[i].timed {
+                self.held[i].released = Some(now);
+                return;
+            }
             let h = self.held.remove(i);
             if !h.active {
                 self.click(control, h.binding, h.owner, now, out);
@@ -495,6 +509,10 @@ impl Engine {
             self.release(control, now, out);
             self.finish_one_shot();
         }
+    }
+
+    fn end_grace(&mut self, now: u64) {
+        self.held.retain(|h| h.released.is_none_or(|at| now.saturating_sub(at) < HOLD_GRACE_MS));
     }
 
     fn hold_time(&self, h: &Held) -> u64 {
@@ -577,6 +595,7 @@ impl Engine {
             // No control has this index, so the click resolves as a single one.
             self.resolve_click(u8::MAX, &mut out);
         }
+        self.end_grace(now);
         let done: Vec<usize> = (0..self.held.len())
             .filter(|i| now.saturating_sub(self.held[*i].since) >= self.hold_time(&self.held[*i]))
             .collect();
@@ -967,6 +986,7 @@ mod tests {
         assert_eq!(e.active_layers(), ["more"]);
         key(&mut e, 7, false, 900);
         assert_eq!(e.page_name(), "start");
+        e.tick(900 + HOLD_GRACE_MS, &none);
         assert!(e.active_layers().is_empty());
     }
 
@@ -1291,8 +1311,9 @@ mod tests {
         assert_eq!(label(&e, 3), "layer");
         assert_eq!(key(&mut e, 3, true, 200), open("layer"));
         key(&mut e, 0, false, 300);
+        e.tick(300 + HOLD_GRACE_MS, &none);
         assert_eq!(label(&e, 3), "base");
-        assert_eq!(key(&mut e, 3, false, 310), vec![]);
+        assert_eq!(key(&mut e, 3, false, 310 + HOLD_GRACE_MS), vec![]);
     }
 
     #[test]
@@ -1339,6 +1360,24 @@ mod tests {
     }
 
     #[test]
+    fn a_held_key_glitching_up_keeps_its_page() {
+        let mut e = engine();
+        key(&mut e, 1, true, 100);
+        e.tick(700, &none);
+        assert_eq!(label(&e, 3), "layer");
+        // The deck reports the held key up and down again as another key goes down.
+        key(&mut e, 1, false, 800);
+        assert_eq!(label(&e, 3), "layer", "still shown inside the grace time");
+        assert_eq!(key(&mut e, 3, true, 820), open("layer"), "a press in the gap uses the held page");
+        key(&mut e, 1, true, 840);
+        e.tick(1100, &none);
+        assert_eq!(label(&e, 3), "layer", "the same hold goes on, no new wait");
+        assert_eq!(key(&mut e, 1, false, 1200), vec![], "and its release is no tap");
+        e.tick(1200 + HOLD_GRACE_MS, &none);
+        assert_eq!(label(&e, 3), "base");
+    }
+
+    #[test]
     fn app_layer_resolves_at_press_and_survives_focus_change() {
         let mut e = engine();
         e.input(Input::Key { index: 2, down: true }, 100, &zed);
@@ -1370,6 +1409,7 @@ mod tests {
         key(&mut e, 0, false, 2010);
         assert_eq!(label(&e, 3), "layer");
         e.tick(2030, &none);
+        e.tick(2030 + HOLD_GRACE_MS, &none);
         assert_eq!(label(&e, 3), "base");
     }
 
@@ -1431,6 +1471,7 @@ mod tests {
         assert_eq!(e.page_name(), "main");
         assert_eq!(wide(&e).display, Display::Dial, "layer shows its own display");
         key(&mut e, WIDE, false, 200);
+        e.tick(200 + HOLD_GRACE_MS, &none);
         assert_eq!(wide(&e).display, Display::Image);
     }
 
