@@ -27,6 +27,10 @@ use windows::Win32::System::Power::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{DEVICE_NOTIFY_CALLBACK, PBT_POWERSETTINGCHANGE};
 use windows::Win32::Media::Multimedia::mciSendStringW;
+use windows::Win32::System::RemoteDesktop::{
+    WTSFreeMemory, WTSQuerySessionInformationW, WTSSessionInfoEx, WTSINFOEXW, WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION,
+    WTS_SESSIONSTATE_LOCK, WTS_SESSIONSTATE_UNKNOWN,
+};
 use windows::Win32::System::StationsAndDesktops::{CloseDesktop, OpenInputDesktop, DESKTOP_CONTROL_FLAGS, DESKTOP_SWITCHDESKTOP};
 use windows::Win32::System::SystemInformation::{GetLocalTime, GetTickCount, GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows::Win32::System::Threading::{
@@ -305,8 +309,24 @@ pub fn hide_window(hwnd: isize) {
     let _ = unsafe { ShowWindow(HWND(hwnd as *mut _), SW_HIDE) };
 }
 
-/// The input desktop can't be opened by a normal process while the session is locked.
+/// Asks Windows whether the session is locked. Probing the input desktop is not enough: a UAC
+/// prompt also switches to the secure desktop, and that must not put the deck to sleep.
 pub fn session_locked() -> bool {
+    let mut info = PWSTR::null();
+    let mut size = 0;
+    let queried = unsafe {
+        WTSQuerySessionInformationW(Some(WTS_CURRENT_SERVER_HANDLE), WTS_CURRENT_SESSION, WTSSessionInfoEx, &mut info, &mut size)
+    };
+    if queried.is_err() || info.is_null() {
+        return input_desktop_hidden();
+    }
+    let flags = unsafe { (*(info.0 as *const WTSINFOEXW)).Data.WTSInfoExLevel1.SessionFlags as u32 };
+    unsafe { WTSFreeMemory(info.0 as _) };
+    if flags == WTS_SESSIONSTATE_UNKNOWN { input_desktop_hidden() } else { flags == WTS_SESSIONSTATE_LOCK }
+}
+
+/// The input desktop can't be opened by a normal process while locked, or during a UAC prompt.
+fn input_desktop_hidden() -> bool {
     match unsafe { OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_SWITCHDESKTOP) } {
         Ok(desktop) => {
             let _ = unsafe { CloseDesktop(desktop) };
@@ -572,6 +592,11 @@ mod tests {
         watch_display();
         std::thread::sleep(Duration::from_millis(500));
         assert!(DISPLAY.load(Ordering::Relaxed) <= 2, "Windows reports it once at registration");
+    }
+
+    #[test]
+    fn an_unlocked_session_reads_as_unlocked() {
+        assert!(!session_locked());
     }
 
     #[test]
