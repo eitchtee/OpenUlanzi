@@ -1,0 +1,19 @@
+# Needs Codex Minibar installed. Copy this folder into %APPDATA%\OpenUlanzi\plugins and restart OpenUlanzi.
+protocol = 1
+id = "openulanzi.codex-minibar"
+name = "Codex Minibar"
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "main.ps1"]
+
+[[page]]
+id = "dashboard"
+name = "AI quotas"
+icon = "ph:gauge-bold"
+
+[[button]]
+id = "quota"
+name = "AI quota"
+icon = "ph:gauge-bold"
+fields = [
+  { key = "provider", label = "Provider", default = "Codex", options = "providers" },
+  { key = "metric", label = "Limit", hint = "Empty uses the provider's first one.", options = "metrics" },
+]

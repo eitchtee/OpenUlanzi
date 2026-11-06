@@ -6,7 +6,7 @@ A plugin adds to OpenUlanzi with an ordinary program, in any language, that read
 - **Buttons**, where the plugin decides everything a key shows and does.
 - **Pages**, where the plugin decides everything the 13 keys and the wide screen show and do.
 
-[`examples/plugins/notes`](../examples/plugins/notes) is a complete plugin with an action, and [`examples/plugins/tally`](../examples/plugins/tally) one with a page and a button.
+[`examples/plugins/notes`](../examples/plugins/notes) is a complete plugin with an action, [`examples/plugins/tally`](../examples/plugins/tally) one with a page and a button, and [`examples/plugins/codex-minibar`](../examples/plugins/codex-minibar) a real one that shows AI quotas from Codex Minibar.
 
 Plugins are not sandboxed: they run with the user's full permissions. Only install ones you trust.
 
