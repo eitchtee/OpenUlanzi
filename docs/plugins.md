@@ -50,7 +50,7 @@ Users add a page with the puzzle button next to the page tabs, and drag a button
 
 A program in the plugin's folder wins over one on the `PATH`, so `["node", "main.js"]` also works if Node is installed.
 
-Every field is text. `hint`, `default` and `options` are optional. `options` names a list the plugin sends to suggest values; the user can still type anything, because the plugin may not be running while they edit.
+Every field is text. `hint`, `default` and `options` are optional. `options` names a list the plugin sends, which the editor offers as a dropdown. Until it has one, as when the plugin isn't running, the user types the value instead.
 
 ## Messages
 

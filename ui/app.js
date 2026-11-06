@@ -1199,13 +1199,17 @@ function browseButton(extensions, commit) {
   }, 'Browse');
 }
 
-let nameLists = 0;
-
-/** Suggests the names reported by OBS or a plugin, but takes any text: it may be closed while editing. */
+/** Picks from the names reported by OBS or a plugin. Without any, as when it's closed, takes any text. */
 function nameField(label, value, names, commit, hint) {
-  const id = `names-${++nameLists}`;
-  const input = h('input', { type: 'text', value, list: id, onchange: () => commit(input.value) });
-  return h('div', {}, field(label, input, hint), h('datalist', { id }, ...(names ?? []).map((name) => h('option', { value: name }))));
+  if (names?.length) {
+    // Not a datalist: that only suggests names matching the text already in the box.
+    const choices = [...new Set(['', value, ...names])];
+    const select = h('select', { onchange: () => commit(select.value) },
+      ...choices.map((name) => h('option', { value: name, selected: name === value }, name)));
+    return field(label, select, hint);
+  }
+  const input = h('input', { type: 'text', value, onchange: () => commit(input.value) });
+  return field(label, input, hint);
 }
 
 function fieldsOf(plugin, item, data, commit) {
