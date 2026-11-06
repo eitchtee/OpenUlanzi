@@ -442,6 +442,85 @@ mod tests {
         wait_until("the new score", || keys(&board)[&WIDE].svg.contains("1 x 0"));
     }
 
+    /// Answers like Codex Minibar's bridge, and keeps what it was asked.
+    fn fake_minibar(token: &'static str) -> (u16, Arc<Mutex<Vec<serde_json::Value>>>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let asked: Arc<Mutex<Vec<serde_json::Value>>> = Arc::default();
+        let log = asked.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut line = String::new();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let window = |left: u32| json!({ "used_percent": 100 - left, "remaining_percent": left, "resets_at": "2099-01-01T00:00:00.123456789Z", "duration_minutes": 300 });
+                let provider = |id: &str, name: &str, left: u32| json!({ "id": id, "name": name, "brand_rgb": [217, 119, 87], "sampled_at": "2026-01-01T00:00:00.123456789Z", "metrics": [
+                    { "id": "x.session", "label": "Sessão de 5h", "window": window(left) },
+                    { "id": "x.weekly", "label": "Semanal", "window": window(left - 10) },
+                ] });
+                let empty = json!({ "id": "off", "name": "Off", "metrics": [] });
+                let answer = match request["op"].as_str().unwrap() {
+                    _ if request["token"] != token => json!({ "ok": false }),
+                    "snapshot" => json!({ "ok": true, "providers": [provider("a", "Claude \u{b7} Pessoal", 64), empty, provider("b", "Codex", 12)] }),
+                    "catalog" => json!({ "ok": true, "providers": [{ "id": "a", "metrics": [{ "id": "x.session", "label": "5h session" }, { "id": "x.weekly", "label": "Weekly" }] }] }),
+                    _ => json!({ "ok": true }),
+                };
+                log.lock().unwrap().push(request);
+                let _ = writeln!(&stream, "{answer}");
+            }
+        });
+        (port, asked)
+    }
+
+    #[test]
+    fn the_minibar_plugin_draws_quotas_and_opens_the_popup() {
+        let dir = folder("minibar");
+        let plugin = dir.join("plugins/minibar");
+        let config = plugin.join("Codex Minibar/Codex Minibar/config");
+        std::fs::create_dir_all(&config).unwrap();
+        let (port, asked) = fake_minibar("secret");
+        let bridge = json!({ "protocol": 1, "host": "127.0.0.1", "port": port, "token": "secret" });
+        std::fs::write(config.join("streamdeck-bridge.json"), bridge.to_string()).unwrap();
+        std::fs::copy("examples/plugins/codex-minibar/main.ps1", plugin.join("main.ps1")).unwrap();
+        // Keeps the test off the real Minibar of whoever runs it.
+        std::fs::write(plugin.join("start.ps1"), r#"$env:APPDATA = $PSScriptRoot; & "$PSScriptRoot\main.ps1""#).unwrap();
+        let manifest = std::fs::read_to_string("examples/plugins/codex-minibar/plugin.toml").unwrap().replace("main.ps1", "start.ps1");
+        std::fs::write(plugin.join("plugin.toml"), manifest).unwrap();
+
+        let plugins = Plugins::load(&dir);
+        plugins.start();
+        wait_until("the suggestions", || plugins.state()[0].options.contains_key("providers"));
+        assert_eq!(plugins.state()[0].options["providers"], ["Claude \u{b7} Pessoal", "Codex"]);
+        let view = |view: &str, params: &[(&str, &str)]| PluginView {
+            id: "openulanzi.codex-minibar".into(),
+            view: view.into(),
+            params: params.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        };
+        let page = view("dashboard", &[]);
+        let button = view("quota", &[("provider", "Codex"), ("metric", "x.weekly")]);
+        let keys = |view: &PluginView| plugins.board.lock().unwrap().surfaces.get(&view.instance()).cloned().unwrap_or_default();
+        plugins.show("deck", HashSet::from([page.clone(), button.clone()]));
+        wait_until("the page", || keys(&page).contains_key(&WIDE));
+        wait_until("the button", || keys(&button).contains_key(&PLUGIN_BUTTON));
+
+        let page = keys(&page);
+        assert!(page[&0].svg.contains("64%") && page[&0].svg.contains("Pessoal") && page[&0].svg.contains("5h"));
+        assert!(page[&5].svg.contains("54%") && page[&5].svg.contains("Weekly"));
+        assert!(page[&1].svg.contains("12%") && page[&6].svg.contains("2%"));
+        assert!(page[&WIDE].svg.contains("2%") && page[&WIDE].svg.contains("Codex"), "the tightest quota");
+        assert!(!page.contains_key(&2), "a provider with no data takes no column");
+        assert_eq!(page[&12].action, Some(crate::config::Action::Back));
+        assert!(page[&11].label.starts_with("Updated"), "shows when a refresh has worked");
+        assert!(keys(&button)[&PLUGIN_BUTTON].svg.contains("2%"));
+
+        let Some(crate::config::Action::Plugin { id, action, params }) = page[&1].action.clone() else { panic!() };
+        plugins.run(&id, &action, &params);
+        wait_until("the popup", || asked.lock().unwrap().iter().any(|r| r["op"] == "open_popup" && r["provider"] == "b"));
+    }
+
     #[test]
     fn a_crashed_plugin_comes_back() {
         let dir = folder("crash");
