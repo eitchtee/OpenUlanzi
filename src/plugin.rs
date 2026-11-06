@@ -1,9 +1,11 @@
-//! Actions from other programs. Each folder in `plugins/` has a `plugin.toml` and runs as one
-//! process, shared by every deck, that reads a JSON line per action on stdin. See `docs/plugins.md`.
-use anyhow::{bail, Context, Result};
+//! Actions, pages and buttons from other programs. Each folder in `plugins/` has a `plugin.toml`
+//! and runs as one process, shared by every deck, that talks in JSON lines. See `docs/plugins.md`.
+use crate::config::{control_index, Binding, PluginView, Surfaces, PLUGIN_BUTTON};
+use crate::protocol::WIDE;
+use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::os::windows::process::CommandExt;
@@ -55,6 +57,10 @@ struct Manifest {
     command: Vec<String>,
     #[serde(default, rename = "action")]
     actions: Vec<PluginAction>,
+    #[serde(default, rename = "page")]
+    pages: Vec<PluginAction>,
+    #[serde(default, rename = "button")]
+    buttons: Vec<PluginAction>,
 }
 
 /// What the editor needs to offer a plugin's actions.
@@ -66,6 +72,8 @@ pub struct PluginState {
     /// Why it is not running.
     pub error: String,
     pub actions: Vec<PluginAction>,
+    pub pages: Vec<PluginAction>,
+    pub buttons: Vec<PluginAction>,
     /// Lists sent by the plugin, by name.
     pub options: BTreeMap<String, Vec<String>>,
 }
@@ -74,10 +82,31 @@ pub struct PluginState {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Message {
     Options { key: String, values: Vec<String> },
+    Draw {
+        instance: String,
+        /// A plugin page's keys by name. Keys left out stay as they are; null empties one.
+        #[serde(default)]
+        keys: BTreeMap<String, Option<Binding>>,
+        /// A plugin button's one binding.
+        button: Option<Binding>,
+    },
+    /// Forget what an instance drew: a button goes back to how the config draws it.
+    Clear { instance: String },
+}
+
+/// What the plugins draw and which of their views are on a deck, shared by decks and plugins.
+#[derive(Default)]
+struct Board {
+    /// Moves on with every change of `surfaces`, so decks copy them only when they have to.
+    generation: u64,
+    surfaces: Surfaces,
+    shown: HashMap<String, HashSet<PluginView>>,
 }
 
 enum Job {
     Run { action: String, params: BTreeMap<String, String> },
+    /// The views on the decks changed.
+    Sync,
     /// The process with this number ended.
     Exited(u64),
 }
@@ -99,6 +128,7 @@ struct Host {
 #[derive(Default)]
 pub struct Plugins {
     hosts: Vec<Host>,
+    board: Arc<Mutex<Board>>,
 }
 
 fn read_manifest(path: &Path) -> Result<Manifest> {
@@ -134,7 +164,7 @@ impl Plugins {
                 let (jobs, inbox) = mpsc::channel();
                 let (state, launch) = match read_manifest(&folder.join(MANIFEST)) {
                     Ok(m) => {
-                        let state = PluginState { id: m.id, name: m.name, actions: m.actions, ..Default::default() };
+                        let state = PluginState { id: m.id, name: m.name, actions: m.actions, pages: m.pages, buttons: m.buttons, ..Default::default() };
                         (state, Some(Launch { folder, command: m.command, inbox }))
                     }
                     Err(e) => {
@@ -145,15 +175,15 @@ impl Plugins {
                 Host { jobs, state: Arc::new(Mutex::new(state)), launch: Mutex::new(launch) }
             })
             .collect();
-        Self { hosts }
+        Self { hosts, board: Arc::default() }
     }
 
     /// Separate from `load` because a second copy of the app must never run a plugin.
     pub fn start(&self) {
         for host in &self.hosts {
             if let Some(launch) = host.launch.lock().unwrap().take() {
-                let (jobs, state) = (host.jobs.clone(), host.state.clone());
-                std::thread::spawn(move || worker(launch, jobs, state));
+                let (jobs, state, board) = (host.jobs.clone(), host.state.clone(), self.board.clone());
+                std::thread::spawn(move || worker(launch, jobs, state, board));
             }
         }
     }
@@ -167,6 +197,23 @@ impl Plugins {
             }
             None => eprintln!("plugin action skipped: {id} is not installed"),
         }
+    }
+
+    /// Says which views a deck has on it now; plugins hear about the ones that came and went.
+    pub fn show(&self, deck: &str, views: HashSet<PluginView>) {
+        self.board.lock().unwrap().shown.insert(deck.to_string(), views);
+        for host in &self.hosts {
+            let _ = host.jobs.send(Job::Sync);
+        }
+    }
+
+    /// What plugins draw, if it changed since `seen`.
+    pub fn surfaces(&self, seen: &mut u64) -> Option<Surfaces> {
+        let board = self.board.lock().unwrap();
+        (board.generation != *seen).then(|| {
+            *seen = board.generation;
+            board.surfaces.clone()
+        })
     }
 
     pub fn state(&self) -> Vec<PluginState> {
@@ -193,13 +240,61 @@ fn spawn(launch: &Launch) -> Result<(Child, ChildStdin)> {
     Ok((child, stdin))
 }
 
-fn apply(line: &str, state: &Mutex<PluginState>) {
-    match serde_json::from_str::<Message>(line) {
-        Ok(Message::Options { key, values }) => {
+/// All or nothing, so a mistake in one key can't leave a page half drawn.
+fn draw(board: &Mutex<Board>, instance: String, keys: BTreeMap<String, Option<Binding>>, button: Option<Binding>) -> Result<()> {
+    let mut changes = Vec::new();
+    for (name, binding) in keys {
+        let index = control_index(&name).filter(|i| *i <= WIDE).ok_or_else(|| anyhow!("no screen named {name}"))?;
+        changes.push((index, binding));
+    }
+    changes.extend(button.map(|b| (PLUGIN_BUTTON, Some(b))));
+    for binding in changes.iter().filter_map(|(_, b)| b.as_ref()) {
+        binding.check_look()?;
+    }
+    let mut board = board.lock().unwrap();
+    let surface = board.surfaces.entry(instance).or_default();
+    for (index, binding) in changes {
+        match binding {
+            Some(binding) => surface.insert(index, binding),
+            None => surface.remove(&index),
+        };
+    }
+    board.generation += 1;
+    Ok(())
+}
+
+fn apply(line: &str, state: &Mutex<PluginState>, board: &Mutex<Board>) -> Result<()> {
+    let message: Message = serde_json::from_str(line)?;
+    let mine = format!("{}/", state.lock().unwrap().id);
+    match message {
+        Message::Options { key, values } => {
             state.lock().unwrap().options.insert(key, values);
         }
-        Err(e) => eprintln!("plugin message ignored: {e}"),
+        Message::Draw { instance, .. } | Message::Clear { instance } if !instance.starts_with(&mine) => {
+            bail!("{instance} is not one of this plugin's");
+        }
+        Message::Draw { instance, keys, button } => draw(board, instance, keys, button)?,
+        Message::Clear { instance } => {
+            let mut board = board.lock().unwrap();
+            board.surfaces.remove(&instance);
+            board.generation += 1;
+        }
     }
+    Ok(())
+}
+
+/// Tells the plugin which of its views came and went since `told`.
+fn sync(id: &str, stdin: &mut ChildStdin, board: &Mutex<Board>, told: &mut HashSet<PluginView>) -> std::io::Result<()> {
+    let shown = board.lock().unwrap().shown.values().flatten().filter(|v| v.id == id).cloned().collect();
+    for view in told.difference(&shown) {
+        writeln!(stdin, "{}", json!({ "type": "disappear", "instance": view.instance() }))?;
+    }
+    for view in shown.difference(told) {
+        let line = json!({ "type": "appear", "instance": view.instance(), "view": view.view, "params": view.params });
+        writeln!(stdin, "{line}")?;
+    }
+    *told = shown;
+    Ok(())
 }
 
 fn forget_for(wait: Duration, inbox: &Receiver<Job>) -> bool {
@@ -208,7 +303,7 @@ fn forget_for(wait: Duration, inbox: &Receiver<Job>) -> bool {
         // Running it later would surprise whoever pressed the key long ago.
         match inbox.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
             Ok(Job::Run { action, .. }) => eprintln!("plugin action skipped while stopped: {action}"),
-            Ok(Job::Exited(_)) => {}
+            Ok(Job::Exited(_) | Job::Sync) => {} // a new process hears about every view anyway
             Err(RecvTimeoutError::Timeout) => return true,
             Err(RecvTimeoutError::Disconnected) => return false,
         }
@@ -217,7 +312,9 @@ fn forget_for(wait: Duration, inbox: &Receiver<Job>) -> bool {
 
 // shortcut: if the app dies the plugin only learns from stdin closing, so one that ignores that
 // lingers; put children in a Windows job object if that shows up in practice.
-fn worker(launch: Launch, jobs: Sender<Job>, state: Arc<Mutex<PluginState>>) {
+fn worker(launch: Launch, jobs: Sender<Job>, state: Arc<Mutex<PluginState>>, board: Arc<Mutex<Board>>) {
+    let id = state.lock().unwrap().id.clone();
+    let mine = format!("{id}/");
     let mut number = 0;
     loop {
         number += 1;
@@ -229,30 +326,39 @@ fn worker(launch: Launch, jobs: Sender<Job>, state: Arc<Mutex<PluginState>>) {
                     shared.error.clear();
                 }
                 let stdout = child.stdout.take();
-                let (shared, exited) = (state.clone(), jobs.clone());
+                let (shared, drawn, exited) = (state.clone(), board.clone(), jobs.clone());
                 std::thread::spawn(move || {
                     for line in stdout.map(BufReader::new).into_iter().flat_map(|s| s.lines()) {
                         let Ok(line) = line else { break };
-                        apply(&line, &shared);
+                        if let Err(e) = apply(&line, &shared, &drawn) {
+                            eprintln!("plugin message ignored: {e:#}");
+                        }
                     }
                     let _ = exited.send(Job::Exited(number));
                 });
-                loop {
+                let mut told = HashSet::new();
+                let mut alive = sync(&id, &mut stdin, &board, &mut told).is_ok();
+                while alive {
                     match launch.inbox.recv() {
                         Ok(Job::Run { action, params }) => {
                             let line = json!({ "type": "run", "action": action, "params": params });
-                            if writeln!(stdin, "{line}").is_err() {
-                                break;
-                            }
+                            alive = writeln!(stdin, "{line}").is_ok();
                         }
+                        Ok(Job::Sync) => alive = sync(&id, &mut stdin, &board, &mut told).is_ok(),
                         // An older process ending says nothing about this one.
-                        Ok(Job::Exited(n)) if n == number => break,
+                        Ok(Job::Exited(n)) if n == number => alive = false,
                         Ok(Job::Exited(_)) => {}
                         Err(_) => return,
                     }
                 }
                 let _ = child.kill();
                 let _ = child.wait();
+                {
+                    // What it drew can't react any more, so its keys fall back to the config.
+                    let mut board = board.lock().unwrap();
+                    board.surfaces.retain(|instance, _| !instance.starts_with(&mine));
+                    board.generation += 1;
+                }
                 let mut shared = state.lock().unwrap();
                 shared.running = false;
                 shared.error = "The plugin stopped. Restarting it…".into();
@@ -309,6 +415,34 @@ mod tests {
     }
 
     #[test]
+    fn the_tally_example_draws_its_page_and_counts_presses() {
+        let dir = folder("tally");
+        let plugin = dir.join("plugins/tally");
+        std::fs::create_dir_all(&plugin).unwrap();
+        for file in ["plugin.toml", "main.ps1"] {
+            std::fs::copy(Path::new("examples/plugins/tally").join(file), plugin.join(file)).unwrap();
+        }
+        let plugins = Plugins::load(&dir);
+        plugins.start();
+        assert_eq!(plugins.state()[0].pages[0].id, "board");
+        assert_eq!(plugins.state()[0].buttons[0].id, "clock");
+        let params = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let board = PluginView { id: "example.tally".into(), view: "board".into(), params: params(&[("left", "Casa"), ("right", "Fora")]) };
+        let clock = PluginView { id: "example.tally".into(), view: "clock".into(), params: params(&[("color", "#34d399")]) };
+        let keys = |view: &PluginView| plugins.board.lock().unwrap().surfaces.get(&view.instance()).cloned().unwrap_or_default();
+        plugins.show("deck", HashSet::from([board.clone(), clock.clone()]));
+        wait_until("the page", || keys(&board).len() == 5);
+        wait_until("the button", || keys(&clock).contains_key(&PLUGIN_BUTTON));
+        assert_eq!(keys(&board)[&0].label, "Casa");
+        assert!(matches!(keys(&board)[&2].hold, Some(crate::config::Action::Plugin { .. })));
+        assert!(keys(&board)[&WIDE].svg.contains("0 x 0"));
+
+        let Some(crate::config::Action::Plugin { id, action, params }) = keys(&board)[&0].action.clone() else { panic!() };
+        plugins.run(&id, &action, &params);
+        wait_until("the new score", || keys(&board)[&WIDE].svg.contains("1 x 0"));
+    }
+
+    #[test]
     fn a_crashed_plugin_comes_back() {
         let dir = folder("crash");
         let plugin = dir.join("plugins/crash");
@@ -331,6 +465,54 @@ mod tests {
         wait_until("the first start", || starts().is_some());
         plugins.run("crash", "any", &BTreeMap::new());
         wait_until("the restart", || starts() == Some(vec!["2".to_string()]));
+    }
+
+    #[test]
+    fn plugins_hear_about_views_and_draw_on_them() {
+        let dir = folder("views");
+        let plugin = dir.join("plugins/views");
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(plugin.join("plugin.toml"), format!("protocol = 1\nid = 'views'\nname = 'Views'\n{POWERSHELL}\n")).unwrap();
+        // Draws on what appears and clears what goes; a bad draw must change nothing. The second
+        // process only draws, to prove a restarted plugin hears about what is still on the deck.
+        let script = r##"
+            [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+            [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+            Add-Content starts.txt 'x'
+            $starts = (Get-Content starts.txt).Count
+            while ($null -ne ($line = [Console]::In.ReadLine())) {
+                $m = $line | ConvertFrom-Json
+                if ($m.type -eq 'run') { exit 1 }
+                if ($m.type -eq 'appear') {
+                    $good = @{ type = 'draw'; instance = $m.instance; keys = @{ '3' = @{ label = "$($m.params.who) $starts"; action = 'back' } } }
+                    $bad = @{ type = 'draw'; instance = $m.instance; keys = @{ '4' = @{ label = 'no' }; knob1 = @{ label = 'no' } } }
+                    $other = @{ type = 'draw'; instance = 'someone.else/1'; button = @{ label = 'no' } }
+                    foreach ($message in $bad, $other, $good) { [Console]::Out.WriteLine(($message | ConvertTo-Json -Compress -Depth 5)) }
+                }
+                if ($m.type -eq 'disappear') { [Console]::Out.WriteLine("{""type"":""clear"",""instance"":""$($m.instance)""}") }
+            }
+        "##;
+        std::fs::write(plugin.join("main.ps1"), script).unwrap();
+        let plugins = Plugins::load(&dir);
+        plugins.start();
+        let view = PluginView { id: "views".into(), view: "page".into(), params: [("who".to_string(), "olá".to_string())].into() };
+        let instance = view.instance();
+        let keys = |plugins: &Plugins| {
+            let board = plugins.board.lock().unwrap();
+            let surface = board.surfaces.get(&instance).cloned().unwrap_or_default();
+            surface.iter().map(|(k, b)| (*k, b.label.clone())).collect::<Vec<_>>()
+        };
+
+        plugins.show("deck", HashSet::from([view]));
+        wait_until("the draw", || keys(&plugins) == [(3, "olá 1".to_string())]);
+        plugins.run("views", "die", &BTreeMap::new());
+        wait_until("the redraw after a restart", || keys(&plugins) == [(3, "olá 2".to_string())]);
+        let mut seen = 0;
+        assert!(plugins.surfaces(&mut seen).is_some());
+        assert!(plugins.surfaces(&mut seen).is_none(), "nothing new to copy");
+        plugins.show("deck", HashSet::new());
+        wait_until("the clear", || keys(&plugins).is_empty());
+        assert!(plugins.board.lock().unwrap().surfaces.is_empty());
     }
 
     #[test]

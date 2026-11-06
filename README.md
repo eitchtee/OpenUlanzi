@@ -13,7 +13,7 @@ An open configurator for Ulanzi stream decks, for people who want more than Ulan
 - **One-shot switching.** Open a page, press one button, and land back where you started.
 - **Plenty of actions.** Hotkeys with any key code, text, apps, websites, media, scrolling, per-app volume, sounds, sequences, toggles and random picks.
 - **OBS Studio control.** Record, stream, switch scenes, toggle sources and filters, mix audio and more, through OBS's built-in WebSocket server. The actions appear while OBS is connected.
-- **Plugins.** Add actions with a small program in any language. See [writing a plugin](docs/plugins.md).
+- **Plugins.** Add actions, live buttons and whole pages with a small program in any language. See [writing a plugin](docs/plugins.md).
 - **Over 3,000 built-in icons.** The Phosphor bold and filled sets, or your own SVG and PNG files.
 - **Firmware clock faces** on the wide screen, with your own date format.
 - **Several decks at once**, each with its own setup.

@@ -1,5 +1,5 @@
 //! The deck loop, shared by the GUI and the headless runner.
-use crate::config::{Action, Config, Display, Visual};
+use crate::config::{Action, Config, Display, PluginView, Visual};
 use crate::device::Deck;
 use crate::engine::Engine;
 use crate::obs::{Obs, ObsState};
@@ -8,7 +8,7 @@ use crate::protocol::{self, CMD_BRIGHTNESS, CMD_LOCK, CMD_SMALL_WINDOW, CMD_UNLO
 use crate::{platform, render::Renderer};
 use anyhow::Result;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -75,6 +75,10 @@ struct App<F> {
     volume: Option<VolumePopup>,
     obs: Obs,
     plugins: Arc<Plugins>,
+    /// The plugin views last reported as on this deck.
+    plugin_views: HashSet<PluginView>,
+    /// Which of the plugins' drawings the engine has.
+    surfaces_seen: u64,
     wide: Option<Display>,
     /// A bundle the firmware may still be unpacking.
     in_flight: Option<Instant>,
@@ -242,6 +246,17 @@ impl<F: FnMut(&Status)> App<F> {
         Ok(())
     }
 
+    fn sync_plugins(&mut self) {
+        let views = self.engine.plugin_views();
+        if views != self.plugin_views {
+            self.plugin_views = views.clone();
+            self.plugins.show(self.device.as_deref().unwrap_or_default(), views);
+        }
+        if let Some(surfaces) = self.plugins.surfaces(&mut self.surfaces_seen) {
+            self.engine.set_surfaces(surfaces);
+        }
+    }
+
     fn clock(&self) -> platform::Now {
         let cfg = &self.engine.cfg;
         platform::now(&cfg.date_format, &cfg.weekday_format)
@@ -384,6 +399,7 @@ impl<F: FnMut(&Status)> App<F> {
             for action in self.engine.tick(self.now(), &platform::foreground_window) {
                 self.run_action(deck, action)?;
             }
+            self.sync_plugins();
             self.paint(deck, &mut painted)?;
             self.publish(true);
             if self.wake.swap(false, Ordering::Relaxed) || last_housekeeping.elapsed() >= HOUSEKEEPING {
@@ -412,6 +428,8 @@ pub fn run(
         brightness: cfg.brightness,
         obs: Obs::start(cfg.obs.clone()),
         plugins,
+        plugin_views: HashSet::new(),
+        surfaces_seen: 0,
         engine: Engine::new(cfg),
         started: Instant::now(),
         path,
@@ -440,6 +458,8 @@ pub fn run(
                     eprintln!("deck lost: {e:#}");
                 }
                 app.engine.release_all();
+                app.plugin_views.clear();
+                app.plugins.show(app.device.as_deref().unwrap_or_default(), HashSet::new());
             }
             Err(e) if !reported => {
                 eprintln!("waiting for deck ({e:#}). Is Ulanzi Studio closed?");

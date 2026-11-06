@@ -5,6 +5,7 @@ const CONTROL_NAMES = { wide: 'Wide screen', side1: 'Left side button', side2: '
 const APP_LAYER = '@app';
 const DEFAULT_PROFILE = '@default';
 const BACK_KEY = '0';
+const ACTION_SLOTS = ['action', 'double', 'hold', 'left', 'right', 'press_left', 'press_right'];
 const BACK_BINDING = { label: 'Back', icon: 'ph:arrow-left-bold' };
 const WIDE_DISPLAYS = [
   ['image', 'Label and icon'], ['page_indicator', 'Page number'], ['dial', 'Analog clock'], ['time', 'Time'],
@@ -115,21 +116,34 @@ let PALETTE = ACTION_GROUPS.flatMap(([, items]) => items);
 function usePlugins(plugins) {
   state.plugins = plugins;
   ACTION_GROUPS.length = BUILT_IN_GROUPS;
-  for (const plugin of plugins.filter((p) => p.actions.length)) {
-    ACTION_GROUPS.push([plugin.name, plugin.actions.map((action) => ({
+  for (const plugin of plugins.filter((p) => p.actions.length || p.buttons.length)) {
+    const glyph = (item) => item.icon.replace(/^ph:/, '') || 'puzzle-piece-bold';
+    ACTION_GROUPS.push([plugin.name, [...plugin.actions.map((action) => ({
       name: action.name,
-      icon: action.icon.replace(/^ph:/, '') || 'puzzle-piece-bold',
+      icon: glyph(action),
       apply: (b) => {
-        const params = Object.fromEntries(action.fields.map((f) => [f.key, f.default]));
-        b.action = { plugin: { id: plugin.id, action: action.id, params } };
+        b.action = { plugin: { id: plugin.id, action: action.id, params: defaultParams(action) } };
         b.label ||= action.name;
         if (action.icon) b.icon ||= action.icon;
       },
-    }))]);
+    })), ...plugin.buttons.map((button) => ({
+      name: button.name,
+      icon: glyph(button),
+      view: true,
+      apply: (b) => {
+        // The plugin decides what the button does, so anything set here would never run.
+        for (const slot of ACTION_SLOTS) delete b[slot];
+        b.plugin = { id: plugin.id, view: button.id, params: defaultParams(button) };
+        b.label ||= button.name;
+        if (button.icon) b.icon ||= button.icon;
+      },
+    }))]]);
     for (const action of plugin.actions) ACTION_NAMES[`plugin:${plugin.id}:${action.id}`] = `${plugin.name}: ${action.name}`;
   }
   PALETTE = ACTION_GROUPS.flatMap(([, items]) => items);
 }
+
+const defaultParams = (item) => Object.fromEntries(item.fields.map((f) => [f.key, f.default]));
 
 function obsAction(b, obs, label, glyph) {
   b.action = { obs };
@@ -188,6 +202,10 @@ const field = (label, control, hint) => h('label', { class: 'field' }, h('span',
 const profile = () => state.cfg.profile[state.profile];
 const page = () => profile().page[state.page];
 const isBackKey = (control) => !!page().folder && control === BACK_KEY;
+/** A plugin page owns every screen. Knobs and side buttons stay the page's. */
+const isPluginKey = (control) => !!page().plugin && hasScreen(control);
+const isFixed = (control) => isBackKey(control) || isPluginKey(control);
+const fixedNote = (control) => (isBackKey(control) ? 'A folder always keeps Back on this key.' : 'The plugin decides what this key shows and does.');
 const binding = (control) => page().keys[control];
 const controlName = (c) => CONTROL_NAMES[c] ?? `Key ${Number(c) + 1}`;
 const isKnob = (c) => KNOBS.includes(c);
@@ -291,7 +309,7 @@ function pickControl(e, control) {
     state.anchor = control;
   } else if (e.shiftKey && state.anchor !== null) {
     const [from, to] = [ORDER.indexOf(state.anchor), ORDER.indexOf(control)].sort((a, b) => a - b);
-    const shown = (c) => !isBackKey(c) && document.querySelector(`.deck [data-control="${c}"]:not(.locked)`);
+    const shown = (c) => !isFixed(c) && document.querySelector(`.deck [data-control="${c}"]:not(.locked)`);
     state.selection = new Set(ORDER.slice(from, to + 1).filter(shown));
   } else {
     return select(control);
@@ -310,7 +328,7 @@ function clearControls(controls) {
 }
 
 function copyControls(controls) {
-  const items = controls.filter((c) => binding(c) && !isBackKey(c)).map((control) => ({ control, binding: structuredClone(binding(control)) }));
+  const items = controls.filter((c) => binding(c) && !isFixed(c)).map((control) => ({ control, binding: structuredClone(binding(control)) }));
   if (!items.length) return notify('Nothing to copy: the selection is empty.');
   state.clipboard = items;
   notify(items.length === 1 ? `Copied ${controlName(items[0].control)}.` : `Copied ${items.length} controls.`);
@@ -340,7 +358,7 @@ function pasteControls(targets) {
   const pasted = [];
   for (const [item, target] of pairs) {
     const [from, to] = [kindOf(item.control), target && kindOf(target)];
-    if (target === null || isBackKey(target) || (from === 'knob') !== (to === 'knob')) {
+    if (target === null || isFixed(target) || (from === 'knob') !== (to === 'knob')) {
       skipped++;
       continue;
     }
@@ -468,7 +486,7 @@ function wireDrag(el, control) {
 function drop(data, target) {
   const [kind, value] = data.split(':');
   if (kind === 'palette') return applyPalette(PALETTE[Number(value)], target);
-  if (kind !== 'key' || value === target || isBackKey(target)) return;
+  if (kind !== 'key' || value === target || isFixed(target)) return;
   if (isKnob(value) !== isKnob(target)) return notify('Knobs can only swap with knobs.', true);
   const keys = page().keys;
   const [from, to] = [keys[value], keys[target]];
@@ -493,7 +511,7 @@ function applyPalette(item, target) {
   ensureFolder(item);
   if (state.armed) return state.armed(item);
   if (item.wait) return notify('Wait only works inside a sequence.', true);
-  if (target !== null && isBackKey(target)) return notify('A folder always keeps Back on this key.', true);
+  if (target !== null && isFixed(target)) return notify(fixedNote(target), true);
   if (target === null) return notify('Select a control first, or drag this onto one.');
   if (item.hold && isKnob(target)) return notify('Knobs cannot be held, because they only report a click.', true);
   if (item.knob && !isKnob(target)) return notify(`${item.name} goes on a knob.`, true);
@@ -537,8 +555,8 @@ function addMarks(el, b, states) {
 }
 
 function keyButton(control, shown) {
-  const locked = isBackKey(control);
-  const b = locked ? BACK_BINDING : binding(control);
+  const locked = isFixed(control);
+  const b = isBackKey(control) ? BACK_BINDING : locked ? null : binding(control);
   const classes = ['ctl', 'key'];
   if (control === 'wide') classes.push('wide');
   const display = visualOf(b, control).display;
@@ -548,7 +566,7 @@ function keyButton(control, shown) {
     class: classes.join(' '),
     'aria-pressed': String(state.selection.has(control)),
     'aria-label': `${controlName(control)}${b?.label ? `: ${b.label}` : ''}`,
-    onclick: (e) => (locked ? notify('A folder always keeps Back on this key.') : pickControl(e, control)),
+    onclick: (e) => (locked ? notify(fixedNote(control)) : pickControl(e, control)),
   });
   if (firmware) el.dataset.face = WIDE_DISPLAYS.find(([id]) => id === display)?.[1] ?? '';
   // A firmware face is drawn over the background image alone, as the deck does.
@@ -628,7 +646,7 @@ function actionLists(action, visit) {
 function forEachAction(pages, visit) {
   for (const p of pages) {
     for (const b of Object.values(p.keys)) {
-      for (const key of ['action', 'double', 'hold', 'left', 'right', 'press_left', 'press_right']) actionLists(b[key], (a) => visit(a, p));
+      for (const key of ACTION_SLOTS) actionLists(b[key], (a) => visit(a, p));
     }
   }
 }
@@ -728,9 +746,19 @@ function pageMenu(at, index) {
     { label: 'Rename', icon: 'pencil-simple-bold', run: startRename },
     { label: 'Duplicate', icon: 'copy-bold', run: duplicatePage },
     p.folder ? null : { label: 'Skip in Next and Previous page', icon: 'skip-forward-bold', checked: !!p.hidden, run: () => { p.hidden = !p.hidden; save(); draw(); } },
+    p.plugin ? { label: 'Keep a Back key, like a folder', icon: 'arrow-left-bold', checked: !!p.folder, run: () => toggleFolder(p) } : null,
     '-',
     { label: p.folder ? 'Delete folder' : 'Delete page', icon: 'trash-bold', danger: true, run: deletePage },
   ]);
+}
+
+function toggleFolder(p) {
+  if (!p.folder && profile().page.filter((o) => !o.folder).length === 1) return notify('A profile needs at least one normal page.', true);
+  p.folder = !p.folder;
+  byKind();
+  state.page = profile().page.indexOf(p);
+  save();
+  draw();
 }
 
 function byKind() {
@@ -758,19 +786,27 @@ function addFolder() {
 }
 
 /** A new page starts with the first page's knobs and side buttons. */
-function addPage() {
+function addPage(name = 'Page', plugin = undefined) {
   const pages = profile().page;
   const keys = {};
   for (const control of [...KNOBS, 'side1', 'side2']) {
     if (pages[0].keys[control]) keys[control] = structuredClone(pages[0].keys[control]);
   }
-  const fresh = { name: freeName('Page'), keys };
+  const fresh = { name: freeName(name), keys, plugin };
   pages.push(fresh);
   byKind();
   state.page = pages.indexOf(fresh);
   state.selected = null;
   save();
   draw();
+}
+
+function pluginPageMenu(at) {
+  openMenu(at, state.plugins.flatMap((plugin) => plugin.pages.map((item) => ({
+    label: `${plugin.name}: ${item.name}`,
+    icon: item.icon.replace(/^ph:/, '') || 'puzzle-piece-bold',
+    run: () => addPage(item.name, { id: plugin.id, view: item.id, params: defaultParams(item) }),
+  }))));
 }
 
 function pageTabs() {
@@ -781,10 +817,11 @@ function pageTabs() {
       onclick: () => { state.page = i; state.selected = null; draw(); },
       ondblclick: startRename,
       oncontextmenu: (e) => { e.preventDefault(); e.stopPropagation(); pageMenu(menuPoint(e), i); },
-    }, p.folder ? icon('folder-bold') : null, p.name);
+    }, p.plugin ? icon('puzzle-piece-bold') : p.folder ? icon('folder-bold') : null, p.name);
     return tab;
   });
-  return h('div', { class: 'tabs', role: 'group', 'aria-label': 'Pages' }, ...tabs, iconButton('plus-bold', 'Add page', addPage), iconButton('folder-plus-bold', 'Add folder', addFolder));
+  const pluginPages = state.plugins.some((p) => p.pages.length) ? iconButton('puzzle-piece-bold', 'Add plugin page', (e) => pluginPageMenu(menuPoint(e))) : null;
+  return h('div', { class: 'tabs', role: 'group', 'aria-label': 'Pages' }, ...tabs, iconButton('plus-bold', 'Add page', () => addPage()), iconButton('folder-plus-bold', 'Add folder', addFolder), pluginPages);
 }
 
 function defaultProfile() {
@@ -1126,7 +1163,7 @@ function paletteResult(item) {
 function actionIcon(type) {
   const item = PALETTE.find((entry) => {
     const { action, hold } = paletteResult(entry);
-    return actionType(hold?.show === undefined ? action : hold) === type && !entry.knob;
+    return actionType(hold?.show === undefined ? action : hold) === type && !entry.knob && !entry.view;
   });
   return item ? icon(item.icon) : null;
 }
@@ -1135,7 +1172,7 @@ function actionIcon(type) {
 function fillSlot(item, options, commit, decorate) {
   ensureFolder(item);
   const result = paletteResult(item);
-  if (item.knob || item.screen) return notify(` cannot go in an action slot. Drop it on a control.`, true);
+  if (item.knob || item.screen || item.view) return notify(` cannot go in an action slot. Drop it on a control.`, true);
   if (item.wait && !options.delay) return notify('Wait only works inside a sequence.', true);
   if (result.hold !== undefined) {
     if (result.hold.show === undefined) return notify('Drag the action to run into this slot.', true);
@@ -1171,12 +1208,24 @@ function nameField(label, value, names, commit, hint) {
   return h('div', {}, field(label, input, hint), h('datalist', { id }, ...(names ?? []).map((name) => h('option', { value: name }))));
 }
 
+function fieldsOf(plugin, item, data, commit) {
+  return item.fields.map((f) => nameField(f.label, data.params?.[f.key] ?? '', plugin.options[f.options],
+    (text) => commit({ ...data, params: { ...data.params, [f.key]: text } }), f.hint));
+}
+
 function pluginFields(data, commit) {
   const plugin = state.plugins.find((p) => p.id === data.id);
   const action = plugin?.actions.find((a) => a.id === data.action);
   if (!action) return [h('p', { class: 'hint' }, 'This plugin is not installed, so the action does nothing.')];
-  return action.fields.map((f) => nameField(f.label, data.params?.[f.key] ?? '', plugin.options[f.options],
-    (text) => commit({ ...data, params: { ...data.params, [f.key]: text } }), f.hint));
+  return fieldsOf(plugin, action, data, commit);
+}
+
+/** The settings of a plugin's page or button. */
+function viewFields(data, commit, hint) {
+  const plugin = state.plugins.find((p) => p.id === data.id);
+  const item = plugin && [...plugin.pages, ...plugin.buttons].find((v) => v.id === data.view);
+  if (!item) return [h('p', { class: 'hint' }, 'This plugin is not installed, so nothing draws here.')];
+  return [h('p', { class: 'hint' }, `${plugin.name}: ${item.name}. ${hint}`), ...fieldsOf(plugin, item, data, commit)];
 }
 
 /** The fields of an OBS action, which is `{ obs: 'name' }` or `{ obs: { name: value } }`. */
@@ -1523,6 +1572,11 @@ function drawInspector() {
         h('button', { type: 'button', disabled: !state.clipboard, onclick: () => pasteControls(targets) }, 'Paste'),
         h('button', { type: 'button', class: 'danger', onclick: () => clearControls(targets) }, 'Clear')));
   }
+  if (control === null && page().plugin) {
+    const p = page();
+    const hint = 'The plugin draws the keys and the wide screen. Knobs and side buttons are still yours to set.';
+    return root.replaceChildren(section('Plugin page', ...viewFields(p.plugin, (plugin) => { p.plugin = plugin; save(); draw(); }, hint)));
+  }
   if (control === null) {
     return root.replaceChildren(h('p', { class: 'panel-empty' }, 'Select a key, side button or knob to set it up. Ctrl+click or Shift+click selects several.'));
   }
@@ -1534,6 +1588,11 @@ function drawInspector() {
       iconButton('x-bold', 'Close', () => select(null))),
     section(hasScreen(control) ? 'Appearance' : 'Name', ...appearance(control, b)),
   ];
+  if (b?.plugin) {
+    const hint = 'The plugin decides what this button shows and does. The look above is used until it draws.';
+    parts.push(section('Plugin button', ...viewFields(b.plugin, setter(control, 'plugin'), hint)));
+    return root.replaceChildren(...parts);
+  }
   const slot = (key, label, options = {}) => actionEditor(label, b?.[key], setter(control, key), options);
   const doubleHint = b?.double ? h('p', { class: 'hint' }, `The single click runs ${state.cfg.double_ms} ms later, to rule out a second click.`) : null;
   if (isKnob(control)) {

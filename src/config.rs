@@ -3,7 +3,9 @@ use crate::{platform, protocol::WIDE};
 use anyhow::{anyhow, bail, Context, Result};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
+use std::hash::{Hash, Hasher};
 use std::path::Path;
 
 /// Frames of the hold border. Each one is a real screen update, so keep this low.
@@ -15,6 +17,11 @@ pub const APP_LAYER: &str = "@app";
 pub const DEFAULT_PROFILE: &str = "@default";
 /// A folder's Back button always sits on this key.
 pub const FOLDER_BACK_KEY: u8 = 0;
+/// Where a plugin button keeps its one binding among a view's bindings.
+pub const PLUGIN_BUTTON: u8 = 0;
+
+/// What plugins currently draw: bindings by control, for each instance of a `PluginView`.
+pub type Surfaces = HashMap<String, HashMap<u8, Binding>>;
 
 // The derived (de)serializers are wrapped below, so `"next_page"` stays a plain string.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -115,6 +122,25 @@ impl<'de> Deserialize<'de> for Action {
             Some("prev_page") => Ok(Action::PrevPage { wrap: true }),
             _ => Action::deserialize(value).map_err(serde::de::Error::custom),
         }
+    }
+}
+
+/// A plugin's page or button placed in the config. The plugin decides what it shows and does.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginView {
+    pub id: String,
+    pub view: String,
+    #[serde(default)]
+    pub params: BTreeMap<String, String>,
+}
+
+impl PluginView {
+    /// Placements with the same settings are one instance, so they show the same thing everywhere.
+    pub fn instance(&self) -> String {
+        let mut hasher = DefaultHasher::new();
+        (&self.view, &self.params).hash(&mut hasher);
+        format!("{}/{:016x}", self.id, hasher.finish())
     }
 }
 
@@ -279,6 +305,8 @@ pub struct Visual {
     pub image_crop: Option<Crop>,
     pub icon_crop: Option<Crop>,
     pub display: Display,
+    /// SVG document from a plugin, drawn over the background and scaled to fit.
+    pub svg: String,
     /// Large centred text, such as the page indicator's `2/3`.
     pub big: String,
     /// How much of the hold border is drawn, up to `HOLD_STEPS`.
@@ -300,6 +328,9 @@ pub struct Binding {
     pub image_crop: Option<Crop>,
     /// The part of a picture icon shown; without it the whole picture is.
     pub icon_crop: Option<Crop>,
+    /// SVG document drawn over the background. Plugins send these.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub svg: String,
     pub display: Option<Display>,
     /// Keys: runs on press, or on tap when `hold` is also set. Knobs: runs on click.
     pub action: Option<Action>,
@@ -315,6 +346,16 @@ pub struct Binding {
     pub right: Option<Action>,
     pub press_left: Option<Action>,
     pub press_right: Option<Action>,
+    /// A plugin button: while the plugin draws it, its binding replaces this one.
+    pub plugin: Option<PluginView>,
+}
+
+impl Binding {
+    /// Mistakes that would otherwise only show up when drawing.
+    pub fn check_look(&self) -> Result<()> {
+        [&self.color, &self.background].into_iter().flatten().try_for_each(|c| check_color(c))?;
+        [&self.image_crop, &self.icon_crop].into_iter().flatten().try_for_each(Crop::check)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -328,6 +369,10 @@ pub struct Page {
     /// it was opened from, and it is never part of next_page/prev_page.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub folder: bool,
+    /// A plugin page: the plugin owns the keys and the wide screen. Knobs and side buttons stay
+    /// the ones set here, and a folder's Back key stays too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<PluginView>,
     #[serde(default, rename = "keys")]
     raw_keys: BTreeMap<String, Binding>,
     #[serde(skip)]
@@ -705,12 +750,7 @@ impl Config {
                 for (name, b) in page.raw_keys.clone() {
                     let ctx = format!("page {:?} key {name}", page.name);
                     let index = control_index(&name).ok_or_else(|| anyhow!("{ctx}: unknown control"))?;
-                    for c in [&b.color, &b.background].into_iter().flatten() {
-                        check_color(c).context(ctx.clone())?;
-                    }
-                    for crop in [&b.image_crop, &b.icon_crop].into_iter().flatten() {
-                        crop.check().context(ctx.clone())?;
-                    }
+                    b.check_look().context(ctx.clone())?;
                     match &b.hold {
                         Some(Action::Show(l)) if l != APP_LAYER && !names.contains(l) => {
                             bail!("{ctx}: unknown page {l:?}");
@@ -745,6 +785,7 @@ impl Config {
             image: b.image.clone(),
             image_crop: b.image_crop,
             icon_crop: b.icon_crop,
+            svg: b.svg.clone(),
             display: b.display.unwrap_or_default(),
             big: String::new(),
             progress: 0,
@@ -754,7 +795,7 @@ impl Config {
     /// The wide screen follows the global setting until a binding gives it something to draw.
     pub fn wide_display(&self, b: Option<&Binding>) -> Display {
         let Some(b) = b else { return self.wide };
-        let drawn = !b.label.is_empty() || !b.icon.is_empty() || !b.image.is_empty() || b.color.is_some() || b.background.is_some();
+        let drawn = !b.label.is_empty() || !b.icon.is_empty() || !b.image.is_empty() || !b.svg.is_empty() || b.color.is_some() || b.background.is_some();
         b.display.unwrap_or(if drawn { Display::Image } else { self.wide })
     }
 

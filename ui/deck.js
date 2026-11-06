@@ -7,6 +7,11 @@ const pngs = new Map();
 function keyImage(visual, wide = false) {
   const id = JSON.stringify([visual, wide]);
   if (!pngs.has(id)) {
+    // A plugin can draw something new every time, so this must not grow forever.
+    if (pngs.size >= 512) {
+      for (const url of pngs.values()) url.then(URL.revokeObjectURL);
+      pngs.clear();
+    }
     pngs.set(id, invoke('render', { visual, wide }).then(
       (bytes) => URL.createObjectURL(new Blob([bytes], { type: 'image/png' })),
     ));

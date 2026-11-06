@@ -1,8 +1,8 @@
 //! Pages, held layers and tap/hold. Pure: time and the focused window come from the caller.
-use crate::config::{control_index, Action, Binding, Config, Display, KeyAt, Look, Target, Visual, APP_LAYER, DEFAULT_PROFILE, FOLDER_BACK_KEY, HOLD_STEPS};
+use crate::config::{control_index, Action, Binding, Config, Display, KeyAt, Look, PluginView, Surfaces, Target, Visual, APP_LAYER, DEFAULT_PROFILE, FOLDER_BACK_KEY, HOLD_STEPS, PLUGIN_BUTTON};
 use crate::platform::Window;
 use crate::protocol::{Input, Knob, WIDE};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const DEBOUNCE_MS: u64 = 25;
 /// A quick tap should not cost a screen update, so the hold border starts after this.
@@ -10,6 +10,8 @@ const BORDER_DELAY_MS: u64 = 120;
 /// The deck can report a held key as briefly up when another key goes down, so a held page
 /// outlives its key by this much and picks up again if the key comes back.
 const HOLD_GRACE_MS: u64 = 150;
+/// Knobs and side buttons, which a plugin page leaves alone.
+const OTHER_CONTROLS: std::ops::RangeInclusive<u8> = 15..=19;
 
 struct Held {
     control: u8,
@@ -107,6 +109,7 @@ pub struct Engine {
     focused: Option<usize>,
     /// What a folder's fixed key does.
     back: Binding,
+    surfaces: Surfaces,
     history: Vec<Location>,
     toggles: HashMap<String, usize>,
     held: Vec<Held>,
@@ -139,6 +142,7 @@ impl Engine {
                 action: Some(Action::Back),
                 ..Default::default()
             },
+            surfaces: Surfaces::new(),
             history: Vec::new(),
             toggles: HashMap::new(),
             held: Vec::new(),
@@ -168,6 +172,25 @@ impl Engine {
         self.blocked = false; // the new config may have no key left to unblock with
         self.looks.clear();
         self.release_all();
+    }
+
+    pub fn set_surfaces(&mut self, surfaces: Surfaces) {
+        self.surfaces = surfaces;
+    }
+
+    /// The plugin pages and buttons on the deck right now, held pages included.
+    pub fn plugin_views(&self) -> HashSet<PluginView> {
+        let mut views = HashSet::new();
+        for control in (0..=WIDE).chain(OTHER_CONTROLS) {
+            let (profile, page) = self.place(control);
+            let here = &self.cfg.profiles[profile].pages[page];
+            if control <= WIDE && here.plugin.is_some() {
+                views.extend(here.plugin.clone());
+            } else {
+                views.extend(here.keys.get(&control).and_then(|b| b.plugin.clone()));
+            }
+        }
+        views
     }
 
     /// Forget physical state: the deck went away, so releases will never arrive.
@@ -264,10 +287,21 @@ impl Engine {
 
     fn lookup(&self, control: u8) -> Option<(&Binding, usize)> {
         let (profile, page) = self.place(control);
-        if control == FOLDER_BACK_KEY && self.cfg.profiles[profile].pages[page].folder {
+        let here = &self.cfg.profiles[profile].pages[page];
+        if control == FOLDER_BACK_KEY && here.folder {
             return Some((&self.back, profile));
         }
-        self.cfg.profiles[profile].pages[page].keys.get(&control).map(|b| (b, profile))
+        if let Some(view) = here.plugin.as_ref().filter(|_| control <= WIDE) {
+            let drawn = self.surfaces.get(&view.instance()).filter(|s| !s.is_empty());
+            // A plugin that is missing or still starting must not trap the deck on its page.
+            if drawn.is_none() && control == FOLDER_BACK_KEY {
+                return Some((&self.back, profile));
+            }
+            return drawn?.get(&control).map(|b| (b, profile));
+        }
+        let b = here.keys.get(&control)?;
+        let drawn = b.plugin.as_ref().and_then(|v| self.surfaces.get(&v.instance())?.get(&PLUGIN_BUTTON));
+        Some((drawn.unwrap_or(b), profile))
     }
 
     /// The binding a press reaches: while blocked, only one that can unblock.
@@ -358,10 +392,14 @@ impl Engine {
                 if let Some(place) = self.history.pop() {
                     self.move_to(place);
                 } else {
-                    // Reloads clear the history, and a folder must never become a dead end.
+                    // Reloads clear the history, and a folder must never become a dead end. Next
+                    // page records none, so a plugin page it reached goes back the same way.
                     let (profile, page) = self.current();
-                    if self.cfg.profiles[profile].pages[page].folder {
+                    let here = &self.cfg.profiles[profile].pages[page];
+                    if here.folder {
                         self.pages[profile] = self.under_folder(profile);
+                    } else if here.plugin.is_some() {
+                        self.step_page(false, true);
                     }
                 }
             }
@@ -686,6 +724,134 @@ mod tests {
         page = "zed"
         exe = "zed.exe"
     "#;
+
+    const PLUGINS: &str = r#"
+        [[profile]]
+        name = "Default"
+        [[profile.page]]
+        name = "main"
+        [profile.page.keys.0]
+        label = "Open"
+        action = { page = "board" }
+        [profile.page.keys.1]
+        label = "Fallback"
+        plugin = { id = "p", view = "light", params = { name = "Desk" } }
+        [profile.page.keys.2]
+        hold = { show = "board" }
+        [profile.page.keys.knob1]
+        left = { open = "volume" }
+
+        [[profile.page]]
+        name = "board"
+        plugin = { id = "p", view = "board" }
+        [profile.page.keys.3]
+        label = "ignored"
+        [profile.page.keys.knob1]
+        left = { open = "scrub" }
+
+        [[profile.page]]
+        name = "folder"
+        folder = true
+        plugin = { id = "p", view = "board" }
+    "#;
+
+    fn board() -> PluginView {
+        PluginView { id: "p".into(), view: "board".into(), params: Default::default() }
+    }
+
+    fn light() -> PluginView {
+        let params = [("name".to_string(), "Desk".to_string())].into();
+        PluginView { id: "p".into(), view: "light".into(), params }
+    }
+
+    fn drawn(views: &[(PluginView, u8, Binding)]) -> Surfaces {
+        let mut surfaces = Surfaces::new();
+        for (view, control, binding) in views {
+            surfaces.entry(view.instance()).or_default().insert(*control, binding.clone());
+        }
+        surfaces
+    }
+
+    fn opens(target: &str) -> Binding {
+        Binding { label: target.into(), action: Some(Action::Open(target.into())), ..Default::default() }
+    }
+
+    #[test]
+    fn a_plugin_button_takes_over_what_the_key_shows_and_does() {
+        let mut e = Engine::new(Config::parse(PLUGINS).unwrap());
+        let press = |e: &mut Engine, at| {
+            let actions = key(e, 1, true, at);
+            key(e, 1, false, at + 30);
+            actions
+        };
+        assert_eq!(e.view()[1].1.label, "Fallback", "the config's look until the plugin draws");
+        assert!(press(&mut e, 100).is_empty());
+        e.set_surfaces(drawn(&[(light(), PLUGIN_BUTTON, opens("on"))]));
+        assert_eq!(e.view()[1].1.label, "on");
+        assert_eq!(press(&mut e, 200), [Action::Open("on".into())]);
+    }
+
+    #[test]
+    fn a_plugin_page_owns_the_screens_and_leaves_the_knobs_alone() {
+        let mut e = Engine::new(Config::parse(PLUGINS).unwrap());
+        e.set_surfaces(drawn(&[(board(), 5, opens("five")), (board(), WIDE, opens("wide"))]));
+        key(&mut e, 0, true, 100);
+        key(&mut e, 0, false, 130);
+        assert_eq!(e.page_name(), "board");
+        assert_eq!(e.view()[5].1.label, "five");
+        assert_eq!(e.view()[WIDE as usize].1.label, "wide");
+        assert_eq!(e.view()[3].1.label, "", "the config's keys are not the page's");
+        assert_eq!(key(&mut e, 5, true, 200), [Action::Open("five".into())]);
+        let turn = Input::Knob { index: 17, gesture: Knob::Left };
+        assert_eq!(e.input(turn, 300, &none), [Action::Open("scrub".into())]);
+    }
+
+    #[test]
+    fn back_leaves_a_plugin_page_reached_by_next_page() {
+        let mut e = Engine::new(Config::parse(PLUGINS).unwrap());
+        e.perform(Action::NextPage { wrap: true }, false);
+        assert_eq!(e.page_name(), "board");
+        e.set_surfaces(drawn(&[(board(), 5, Binding { action: Some(Action::Back), ..Default::default() })]));
+        key(&mut e, 5, true, 100);
+        assert_eq!(e.page_name(), "main");
+    }
+
+    #[test]
+    fn a_held_plugin_page_shows_and_counts_as_on_the_deck() {
+        let mut e = Engine::new(Config::parse(PLUGINS).unwrap());
+        assert_eq!(e.plugin_views(), HashSet::from([light()]));
+        e.set_surfaces(drawn(&[(board(), 5, opens("five"))]));
+        key(&mut e, 2, true, 100);
+        e.tick(350, &none);
+        assert_eq!(e.view()[5].1.label, "five");
+        assert_eq!(e.plugin_views(), HashSet::from([board()]));
+    }
+
+    #[test]
+    fn a_plugin_folder_keeps_its_back_key_even_when_drawn_over() {
+        let cfg = PLUGINS.replace(r#"action = { page = "board" }"#, r#"action = { page = "folder" }"#);
+        let mut e = Engine::new(Config::parse(&cfg).unwrap());
+        e.set_surfaces(drawn(&[(board(), 0, opens("mine")), (board(), 5, opens("five"))]));
+        key(&mut e, 0, true, 100);
+        key(&mut e, 0, false, 130);
+        assert_eq!(e.page_name(), "folder");
+        assert_eq!(e.view()[0].1.label, "Back");
+        assert_eq!(e.view()[5].1.label, "five");
+    }
+
+    #[test]
+    fn a_plugin_page_nothing_draws_is_never_a_dead_end() {
+        let mut e = Engine::new(Config::parse(PLUGINS).unwrap());
+        key(&mut e, 0, true, 100);
+        key(&mut e, 0, false, 130);
+        assert_eq!(e.page_name(), "board");
+        assert_eq!(e.view()[0].1.label, "Back");
+        e.reload(Config::parse(PLUGINS).unwrap());
+        assert_eq!(e.page_name(), "board");
+        assert_eq!(e.view()[0].1.label, "Back", "a reload forgets where it came from");
+        key(&mut e, 0, true, 300);
+        assert_eq!(e.page_name(), "main");
+    }
 
     const FOLDER: &str = r#"
         [[profile]]

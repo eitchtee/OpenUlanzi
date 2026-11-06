@@ -1,0 +1,22 @@
+# Copy this folder into %APPDATA%\OpenUlanzi\plugins and restart OpenUlanzi.
+protocol = 1
+id = "example.tally"
+name = "Tally"
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "main.ps1"]
+
+[[page]]
+id = "board"
+name = "Tally board"
+icon = "ph:hash-bold"
+fields = [
+  { key = "left", label = "Left team", default = "Home" },
+  { key = "right", label = "Right team", default = "Away" },
+]
+
+[[button]]
+id = "clock"
+name = "Clock"
+icon = "ph:clock-bold"
+fields = [
+  { key = "color", label = "Color", hint = "As #rrggbb.", default = "#34d399" },
+]
