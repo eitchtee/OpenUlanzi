@@ -20,6 +20,7 @@ pub fn library() -> &'static HashMap<&'static str, &'static str> {
     MAP.get_or_init(|| ICONS.lines().filter_map(|line| line.split_once('\t')).collect())
 }
 const ICON_BOX: f32 = 100.0;
+const MAX_CACHED: usize = 512;
 
 fn escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
@@ -46,6 +47,10 @@ impl Renderer {
         let key = (visual.clone(), wide);
         if !self.cache.contains_key(&key) {
             let png = self.draw(visual, wide)?;
+            // A plugin can draw something new every time, so this must not grow forever.
+            if self.cache.len() >= MAX_CACHED {
+                self.cache.clear();
+            }
             self.cache.insert(key.clone(), png);
         }
         Ok(&self.cache[&key])
@@ -105,6 +110,16 @@ impl Renderer {
         Ok(())
     }
 
+    /// A plugin's picture, centred and scaled to fit.
+    fn plugin_svg(&self, source: &str, canvas: &mut Pixmap) -> Result<()> {
+        let tree = usvg::Tree::from_str(source, &self.options)?;
+        let (w, h) = (canvas.width() as f32, canvas.height() as f32);
+        let scale = (w / tree.size().width()).min(h / tree.size().height());
+        let (x, y) = ((w - tree.size().width() * scale) / 2.0, (h - tree.size().height() * scale) / 2.0);
+        resvg::render(&tree, Transform::from_translate(x, y).pre_scale(scale, scale), &mut canvas.as_mut());
+        Ok(())
+    }
+
     fn draw(&self, v: &Visual, wide: bool) -> Result<Vec<u8>> {
         let width = if wide { WIDE_WIDTH } else { SIZE };
 
@@ -133,13 +148,23 @@ impl Renderer {
             ),
         });
         let background = format!(
-            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{SIZE}"><rect width="100%" height="100%" fill="{}"/>{}{}{}</svg>"#,
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{SIZE}"><rect width="100%" height="100%" fill="{}"/>{}</svg>"#,
             v.background,
-            image.as_deref().unwrap_or(""),
+            image.as_deref().unwrap_or("")
+        );
+        self.svg(&background, &mut canvas, Transform::identity())?;
+        if !v.svg.is_empty() {
+            // A plugin's mistake should not take the whole page down with it.
+            if let Err(e) = self.plugin_svg(&v.svg, &mut canvas) {
+                eprintln!("plugin picture: {e:#}");
+            }
+        }
+        let writing = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{SIZE}">{}{}</svg>"#,
             big.as_deref().unwrap_or(""),
             text.as_deref().unwrap_or("")
         );
-        self.svg(&background, &mut canvas, Transform::identity())?;
+        self.svg(&writing, &mut canvas, Transform::identity())?;
 
         if !v.icon.is_empty() {
             let y = if v.label.is_empty() { 48.0 } else { 30.0 };
@@ -175,6 +200,19 @@ mod tests {
 
     fn pixmap(png: &[u8]) -> Pixmap {
         Pixmap::decode_png(png).unwrap()
+    }
+
+    #[test]
+    fn a_plugin_picture_fills_the_key_and_a_broken_one_leaves_the_background() {
+        let mut r = Renderer::new(std::env::temp_dir());
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="98" height="98"><rect width="98" height="98" fill="#ff0000"/></svg>"##;
+        let v = Visual { svg: svg.into(), background: "#000000".into(), ..Default::default() };
+        assert_eq!(pixmap(r.png(&v, false).unwrap()).pixel(190, 190).unwrap().red(), 255);
+        let wide = pixmap(r.png(&v, true).unwrap());
+        assert_eq!(wide.pixel(229, 98).unwrap().red(), 255);
+        assert_eq!(wide.pixel(10, 98).unwrap().red(), 0, "kept in shape and centred");
+        let broken = Visual { svg: "<svg".into(), ..v };
+        assert_eq!(pixmap(r.png(&broken, false).unwrap()).pixel(98, 98).unwrap().red(), 0);
     }
 
     #[test]
