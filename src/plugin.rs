@@ -8,6 +8,7 @@ use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -19,6 +20,7 @@ use std::time::{Duration, Instant};
 const PROTOCOL: u32 = 1;
 const MANIFEST: &str = "plugin.toml";
 const RETRY: Duration = Duration::from_secs(3);
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -223,17 +225,20 @@ impl Plugins {
 
 fn spawn(launch: &Launch) -> Result<(Child, ChildStdin)> {
     let (program, args) = launch.command.split_first().context("no command")?;
+    // Windows PowerShell is Windows only; PowerShell 7 runs the same scripts elsewhere.
+    #[cfg(not(windows))]
+    let program = &if program.eq_ignore_ascii_case("powershell") { "pwsh".to_string() } else { program.clone() };
     let local = launch.folder.join(program);
     let program = if local.is_file() { local.as_os_str() } else { program.as_ref() };
     // A pipe nobody reads would block the plugin, so what it logs goes to a file.
     let log = File::create(launch.folder.join("plugin.log")).map_or(Stdio::null(), Stdio::from);
-    let mut child = Command::new(program)
-        .args(args)
-        .current_dir(&launch.folder)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(log)
-        .creation_flags(CREATE_NO_WINDOW)
+    let mut command = Command::new(program);
+    command.args(args).current_dir(&launch.folder).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(log);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    #[cfg(target_os = "macos")]
+    command.env("PATH", crate::platform::search_path());
+    let mut child = command
         .spawn()
         .with_context(|| format!("Could not start {}", launch.command[0]))?;
     let stdin = child.stdin.take().context("no stdin")?;

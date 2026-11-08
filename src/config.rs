@@ -410,8 +410,10 @@ impl Profile {
     /// All given conditions must hold; a profile without conditions matches nothing.
     pub fn matches(&self, w: &platform::Window) -> bool {
         let exe_name = w.exe.rsplit(['\\', '/']).next().unwrap_or(&w.exe);
+        // A Mac app matches with or without its .app, as it shows in Finder.
+        let app_name = exe_name.strip_suffix(".app").unwrap_or(exe_name);
         self.has_conditions()
-            && self.exe.as_ref().is_none_or(|e| e.eq_ignore_ascii_case(exe_name) || e.eq_ignore_ascii_case(&w.exe))
+            && self.exe.as_ref().is_none_or(|e| e.eq_ignore_ascii_case(exe_name) || e.eq_ignore_ascii_case(app_name) || e.eq_ignore_ascii_case(&w.exe))
             && self.title.as_ref().is_none_or(|t| w.title.to_lowercase().contains(&t.to_lowercase()))
             && self.regex.as_ref().is_none_or(|r| r.is_match(&w.title))
     }

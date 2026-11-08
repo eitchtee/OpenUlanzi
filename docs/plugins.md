@@ -12,7 +12,7 @@ Plugins are not sandboxed: they run with the user's full permissions. Only insta
 
 ## Installing
 
-Put the plugin's folder in `%APPDATA%\OpenUlanzi\plugins`, then quit from the tray and reopen OpenUlanzi. Settings lists each plugin and any problem starting it. With the headless runner, the `plugins` folder sits next to the config file.
+Put the plugin's folder in `%APPDATA%\OpenUlanzi\plugins` (`~/Library/Application Support/OpenUlanzi/plugins` on macOS), then quit from the tray and reopen OpenUlanzi. Settings lists each plugin and any problem starting it. With the headless runner, the `plugins` folder sits next to the config file.
 
 ## plugin.toml
 

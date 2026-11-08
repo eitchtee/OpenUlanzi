@@ -3,13 +3,19 @@
 const k = (label, token = label.toLowerCase(), width = 1) => [label, token, width];
 const row = (text) => [...text].map((c) => k(c));
 const gap = (width) => [null, null, width];
+// The same tokens on both systems: win is Command and alt is Option on a Mac.
+const IS_MAC = /Mac/.test(navigator.platform || navigator.userAgent);
+const SYS = (windows, mac) => (IS_MAC ? mac : windows);
 
 const FUNCTION_ROWS = [
   [k('Esc', 'esc'), gap(1), ...[1, 2, 3, 4].map((n) => k(`F${n}`)), gap(.5), ...[5, 6, 7, 8].map((n) => k(`F${n}`)), gap(.5), ...[9, 10, 11, 12].map((n) => k(`F${n}`))],
   [gap(2), ...[13, 14, 15, 16].map((n) => k(`F${n}`)), gap(.5), ...[17, 18, 19, 20].map((n) => k(`F${n}`)), gap(.5), ...[21, 22, 23, 24].map((n) => k(`F${n}`))],
 ];
 
-const bottomRow = [
+const bottomRow = IS_MAC ? [
+  k('Control', 'ctrl', 1.5), k('Option', 'alt', 1.25), k('⌘ Cmd', 'win', 1.5), k('Space', 'space', 5.25),
+  k('⌘ RCmd', 'rwin', 1.5), k('ROption', 'ralt', 1.25), k('RControl', 'rctrl', 1.25),
+] : [
   k('Ctrl', 'ctrl', 1.5), k('Win', 'win', 1.25), k('Alt', 'alt', 1.25), k('Space', 'space', 5.5),
   k('AltGr', 'altgr', 1.25), k('RWin', 'rwin', 1.25), k('RCtrl', 'rctrl', 1.5),
 ];
@@ -32,14 +38,14 @@ const LAYOUTS = {
 };
 
 const NAV_BLOCK = [
-  [k('PrtSc', 'printscreen'), k('Ins', 'insert'), k('Home', 'home'), k('PgUp', 'pageup')],
-  [k('Del', 'delete'), k('End', 'end'), k('PgDn', 'pagedown'), gap(1)],
+  [k(SYS('PrtSc', 'F13'), 'printscreen'), k(SYS('Ins', 'Help'), 'insert'), k('Home', 'home'), k('PgUp', 'pageup')],
+  [k(SYS('Del', 'Fwd Del'), 'delete'), k('End', 'end'), k('PgDn', 'pagedown'), gap(1)],
   [gap(1), k('Up', 'up'), gap(2)],
   [k('Left', 'left'), k('Down', 'down'), k('Right', 'right'), gap(1)],
 ];
 
 const NUMPAD = [
-  [k('Num', 'vk90'), k('/', 'vk6f'), k('*', 'vk6a'), k('-', 'vk6d')],
+  [k(SYS('Num', 'Clear'), 'vk90'), k('/', 'vk6f'), k('*', 'vk6a'), k('-', 'vk6d')],
   [k('7', 'vk67'), k('8', 'vk68'), k('9', 'vk69'), k('+', 'vk6b')],
   [k('4', 'vk64'), k('5', 'vk65'), k('6', 'vk66'), k('.', 'vk6e')],
   [k('1', 'vk61'), k('2', 'vk62'), k('3', 'vk63'), k('0', 'vk60')],
@@ -47,5 +53,5 @@ const NUMPAD = [
 
 const MEDIA_KEYS = [
   k('Mute', 'mute', 2), k('Volume down', 'volume_down', 2), k('Volume up', 'volume_up', 2),
-  k('Play or pause', 'play_pause', 2), k('Previous', 'prev_track', 2), k('Next', 'next_track', 2), k('Stop', 'media_stop', 2),
+  k('Play or pause', 'play_pause', 2), k('Previous', 'prev_track', 2), k('Next', 'next_track', 2), ...(IS_MAC ? [] : [k('Stop', 'media_stop', 2)]),
 ];

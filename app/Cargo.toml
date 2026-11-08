@@ -10,7 +10,8 @@ repository = "https://github.com/eitchtee/OpenUlanzi"
 openulanzi = { path = ".." }
 serde = "1"
 serde_json = "1"
-tauri = { version = "2", features = ["tray-icon"] }
+# macos-private-api lets the volume popup be see-through on macOS; it does nothing elsewhere.
+tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"

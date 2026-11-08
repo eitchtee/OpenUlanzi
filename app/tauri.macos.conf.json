@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": ["app", "dmg"],
+    "icon": ["icons/icon.icns", "icons/icon.png"],
+    "category": "public.app-category.utilities",
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-"
+    }
+  }
+}

@@ -17,11 +17,15 @@ pub enum Install {
     Portable,
     /// Built from source: replacing it would only confuse cargo.
     Dev,
+    /// A macOS app: the release page has the new version to download.
+    Manual,
 }
 
 pub fn install_kind(exe: &Path) -> Install {
     if exe.components().any(|part| part.as_os_str() == "target") {
         Install::Dev
+    } else if cfg!(target_os = "macos") {
+        Install::Manual
     } else if exe.with_file_name("uninstall.exe").exists() {
         Install::Installed
     } else {
@@ -39,8 +43,8 @@ pub struct Asset {
 pub struct Update {
     pub version: String,
     pub notes_url: String,
-    setup: Asset,
-    portable: Asset,
+    setup: Option<Asset>,
+    portable: Option<Asset>,
 }
 
 fn version_parts(version: &str) -> Option<(u64, u64, u64)> {
@@ -61,16 +65,18 @@ fn asset(release: &serde_json::Value, name: &str) -> Result<Asset> {
     Ok(Asset { url: text("browser_download_url")?.to_string(), sha256: sha256.to_string() })
 }
 
-fn parse_release(body: &str, current: &str) -> Result<Option<Update>> {
+/// `builds` asks for the Windows installer and portable exe, which an update installs.
+fn parse_release(body: &str, current: &str, builds: bool) -> Result<Option<Update>> {
     let release: serde_json::Value = serde_json::from_str(body).context("reading the release")?;
     let tag = release["tag_name"].as_str().ok_or_else(|| anyhow!("release has no tag"))?;
     if !is_newer(tag, current) {
         return Ok(None);
     }
     let version = tag.trim_start_matches('v').to_string();
+    let build = |name: String| if builds { asset(&release, &name).map(Some) } else { Ok(None) };
     Ok(Some(Update {
-        setup: asset(&release, &format!("OpenUlanzi-{version}-setup.exe"))?,
-        portable: asset(&release, &format!("OpenUlanzi-{version}-portable.exe"))?,
+        setup: build(format!("OpenUlanzi-{version}-setup.exe"))?,
+        portable: build(format!("OpenUlanzi-{version}-portable.exe"))?,
         notes_url: release["html_url"].as_str().unwrap_or_default().to_string(),
         version,
     }))
@@ -83,7 +89,7 @@ fn agent() -> ureq::Agent {
 /// The latest release, if it is newer than `current`.
 pub fn check(current: &str) -> Result<Option<Update>> {
     let mut response = agent().get(LATEST).header("User-Agent", USER_AGENT).call().context("reaching GitHub")?;
-    parse_release(&response.body_mut().read_to_string()?, current)
+    parse_release(&response.body_mut().read_to_string()?, current, !cfg!(target_os = "macos"))
 }
 
 fn verified(bytes: &[u8], sha256: &str) -> Result<()> {
@@ -124,17 +130,19 @@ pub fn clean_up(exe: &Path) {
 
 /// Downloads the build matching this copy and starts it. The caller must exit straight after.
 pub fn install(update: &Update, exe: &Path) -> Result<()> {
+    let missing = || anyhow!("this release has no build for this copy");
     match install_kind(exe) {
         Install::Dev => bail!("this copy was built from source, so update it with git"),
+        Install::Manual => bail!("download the new version from the release page"),
         Install::Installed => {
             let setup = std::env::temp_dir().join(format!("OpenUlanzi-{}-setup.exe", update.version));
-            download(&update.setup, &setup)?;
+            download(update.setup.as_ref().ok_or_else(missing)?, &setup)?;
             // Passive shows progress without asking anything; /R starts the app when it's done.
             Command::new(setup).args(["/P", "/UPDATE", "/R"]).spawn().context("starting the installer")?;
         }
         Install::Portable => {
             let new = exe.with_extension("exe.new");
-            download(&update.portable, &new).context("is this folder writable?")?;
+            download(update.portable.as_ref().ok_or_else(missing)?, &new).context("is this folder writable?")?;
             swap_exe(&new, exe)?;
             let pid = std::process::id().to_string();
             Command::new(exe).args(["--after-update", &pid]).spawn().context("starting the new version")?;
@@ -168,18 +176,26 @@ mod tests {
 
     #[test]
     fn a_newer_release_gives_both_builds() {
-        let update = parse_release(RELEASE, "1.1.0").unwrap().unwrap();
+        let update = parse_release(RELEASE, "1.1.0", true).unwrap().unwrap();
         assert_eq!(update.version, "1.2.0");
-        assert_eq!(update.setup, Asset { url: "https://example.com/s".into(), sha256: "bb".into() });
-        assert_eq!(update.portable.sha256, "aa");
-        assert_eq!(parse_release(RELEASE, "1.2.0").unwrap(), None);
+        assert_eq!(update.setup, Some(Asset { url: "https://example.com/s".into(), sha256: "bb".into() }));
+        assert_eq!(update.portable.unwrap().sha256, "aa");
+        assert_eq!(parse_release(RELEASE, "1.2.0", true).unwrap(), None);
+    }
+
+    #[test]
+    fn a_mac_only_needs_to_hear_of_the_release() {
+        let bare = r#"{ "tag_name": "v1.2.0", "html_url": "https://example.com/notes", "assets": [] }"#;
+        let update = parse_release(bare, "1.1.0", false).unwrap().unwrap();
+        assert_eq!((update.version.as_str(), update.notes_url.as_str()), ("1.2.0", "https://example.com/notes"));
+        assert!(update.setup.is_none() && parse_release(bare, "1.1.0", true).is_err());
     }
 
     #[test]
     fn a_release_without_checksums_is_refused() {
         let unsafe_release = RELEASE.replace("sha256:bb", "unknown");
-        assert!(parse_release(&unsafe_release, "1.1.0").is_err());
-        assert!(parse_release(&RELEASE.replace(r#""digest": "sha256:aa","#, ""), "1.1.0").is_err());
+        assert!(parse_release(&unsafe_release, "1.1.0", true).is_err());
+        assert!(parse_release(&RELEASE.replace(r#""digest": "sha256:aa","#, ""), "1.1.0", true).is_err());
     }
 
     #[test]
@@ -196,6 +212,7 @@ mod tests {
         dir
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_kind_of_install_comes_from_where_it_lives() {
         let dir = temp("kind");
@@ -204,6 +221,13 @@ mod tests {
         std::fs::write(dir.join("uninstall.exe"), b"").unwrap();
         assert_eq!(install_kind(&exe), Install::Installed);
         assert_eq!(install_kind(Path::new(r"C:\code\target\release\app.exe")), Install::Dev);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_mac_app_updates_by_hand() {
+        assert_eq!(install_kind(Path::new("/Applications/OpenUlanzi.app/Contents/MacOS/openulanzi-app")), Install::Manual);
+        assert_eq!(install_kind(Path::new("/code/target/release/openulanzi-app")), Install::Dev);
     }
 
     #[test]
