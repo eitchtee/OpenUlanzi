@@ -369,7 +369,7 @@ impl<F: FnMut(&Status)> App<F> {
 
     fn follow_focus(&mut self) {
         // Editing the deck in our own window must not change what's on it.
-        let window = platform::foreground_window().filter(|w| !w.exe.ends_with("openulanzi-app.exe"));
+        let window = platform::foreground_window().filter(|w| !platform::is_own(&w.exe));
         if let Some(window) = window {
             self.engine.focus_changed(&window);
         }

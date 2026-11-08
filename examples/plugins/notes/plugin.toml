@@ -1,4 +1,4 @@
-# Copy this folder into %APPDATA%\OpenUlanzi\plugins and restart OpenUlanzi.
+# Copy this folder into %APPDATA%\OpenUlanzi\plugins (on macOS ~/Library/Application Support/OpenUlanzi/plugins) and restart OpenUlanzi.
 protocol = 1
 id = "example.notes"
 name = "Notes"

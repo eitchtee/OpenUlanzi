@@ -1,5 +1,5 @@
 //! Windows integration: input injection, launching, focused window, lock state.
-// shortcut: Windows only, hide this module behind cfg when adding Linux/macOS.
+use super::{capitalised, split_command, stepped, Now, Window};
 use anyhow::{anyhow, bail, Result};
 use resvg::tiny_skia::Pixmap;
 use windows::core::{w, Interface, GUID, HSTRING, PCWSTR, PWSTR};
@@ -43,12 +43,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
     HICON, ICONINFO, SW_HIDE, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, WHEEL_DELTA, WM_CLOSE,
 };
 
-#[derive(Debug, Clone)]
-pub struct Window {
-    pub exe: String,
-    pub title: String,
-}
-
 fn vk(name: &str) -> Option<u16> {
     let bytes = name.as_bytes();
     if let [c @ (b'a'..=b'z' | b'0'..=b'9')] = bytes {
@@ -66,10 +60,10 @@ fn vk(name: &str) -> Option<u16> {
         "rctrl" => VK_RCONTROL,
         "shift" => VK_LSHIFT,
         "rshift" => VK_RSHIFT,
-        "alt" => VK_LMENU,
+        "alt" | "option" | "opt" => VK_LMENU,
         "altgr" | "ralt" => VK_RMENU,
-        "win" => VK_LWIN,
-        "rwin" => VK_RWIN,
+        "win" | "cmd" | "command" => VK_LWIN,
+        "rwin" | "rcmd" => VK_RWIN,
         "enter" => VK_RETURN,
         "esc" => VK_ESCAPE,
         "tab" => VK_TAB,
@@ -161,16 +155,6 @@ pub fn open(target: &str) -> Result<()> {
     Ok(())
 }
 
-fn split_command(command: &str, exists: impl Fn(&str) -> bool) -> (&str, &str) {
-    if let Some((file, args)) = command.strip_prefix('"').and_then(|rest| rest.split_once('"')) {
-        return (file, args.trim_start());
-    }
-    if exists(command) {
-        return (command, "");
-    }
-    command.split_once(char::is_whitespace).map_or((command, ""), |(file, args)| (file, args.trim_start()))
-}
-
 fn process_path(pid: u32) -> Option<String> {
     unsafe {
         let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
@@ -218,11 +202,6 @@ fn audio_sessions(exe: &str) -> Result<Vec<ISimpleAudioVolume>> {
         }
     }
     Ok(found)
-}
-
-/// Steps a 0-1 session volume by whole percents, so repeated presses land on round numbers.
-fn stepped(level: f32, percent: i32) -> f32 {
-    ((level * 100.0).round() as i32 + percent).clamp(0, 100) as f32 / 100.0
 }
 
 /// Changes the app's volume, returning the new percent. None means Windows has no audio session
@@ -336,13 +315,6 @@ fn input_desktop_hidden() -> bool {
     }
 }
 
-/// Fields the firmware's digital clock faces display.
-pub struct Now {
-    pub time: String,
-    pub date: String,
-    pub weekday: String,
-}
-
 /// Formats through Windows, so names come out in the system language. An empty picture uses the
 /// system short date.
 fn format_date(when: &SYSTEMTIME, picture: &str) -> String {
@@ -356,11 +328,6 @@ fn format_date(when: &SYSTEMTIME, picture: &str) -> String {
     let written = unsafe { GetDateFormatEx(PCWSTR::null(), flags, Some(when), format, Some(&mut text), PCWSTR::null()) };
     // The count includes the terminator; 0 means a failure, shown as nothing rather than garbage.
     String::from_utf16_lossy(&text[..(written.max(1) as usize - 1)])
-}
-
-fn capitalised(text: &str) -> String {
-    let mut letters = text.chars();
-    letters.next().map_or_else(String::new, |first| first.to_uppercase().chain(letters).collect())
 }
 
 pub fn now(date_format: &str, weekday_format: &str) -> Now {
@@ -541,15 +508,6 @@ pub fn stop_sound() {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn commands_split_like_the_run_dialog() {
-        let none = |_: &str| false;
-        assert_eq!(split_command("notepad", none), ("notepad", ""));
-        assert_eq!(split_command("notepad  a b.txt", none), ("notepad", "a b.txt"));
-        assert_eq!(split_command(r#""C:\My App\x.exe" --flag"#, none), (r"C:\My App\x.exe", "--flag"));
-        assert_eq!(split_command(r"C:\My Scripts\a b.ahk", |_| true), (r"C:\My Scripts\a b.ahk", ""));
-        assert_eq!(split_command(r"shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App", none).1, "");
-    }
     use super::*;
 
     #[test]
@@ -559,16 +517,7 @@ mod tests {
         assert_eq!(format_date(&day, "yyyy-MM-dd"), "2026-11-01");
         assert!(!format_date(&day, "").is_empty(), "system short date");
         assert!(!format_date(&day, "ddd").is_empty(), "weekday name");
-        assert_eq!(capitalised("dom"), "Dom");
-        assert_eq!(capitalised(""), "");
         assert_eq!(now("yyyy", "ddd").date.len(), 4);
-    }
-
-    #[test]
-    fn volume_steps_stay_on_round_numbers_and_in_range() {
-        assert_eq!(stepped(0.33, 5), 0.38);
-        assert_eq!(stepped(0.97, 5), 1.0);
-        assert_eq!(stepped(0.02, -5), 0.0);
     }
 
     #[test]

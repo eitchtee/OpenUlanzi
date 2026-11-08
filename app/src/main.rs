@@ -21,7 +21,7 @@ use tauri_plugin_dialog::DialogExt;
 const POPUP_TIME: Duration = Duration::from_millis(1500);
 const UPDATE_WAIT: Duration = Duration::from_secs(15);
 const DEVICE_SCAN: Duration = Duration::from_secs(5);
-/// Height above the bottom of the screen, clear of the taskbar like the Windows flyout.
+/// Height above the bottom of the screen, clear of the taskbar like the Windows flyout, or the Dock.
 const POPUP_MARGIN: f64 = 72.0;
 
 struct Shared {
@@ -230,23 +230,44 @@ fn place_popup(popup: &WebviewWindow) -> tauri::Result<()> {
     Ok(())
 }
 
+/// The native window behind a webview: an HWND on Windows, an NSWindow pointer on macOS.
+fn native_window(window: &WebviewWindow) -> Option<isize> {
+    #[cfg(windows)]
+    return window.hwnd().ok().map(|h| h.0 as isize);
+    #[cfg(target_os = "macos")]
+    return window.ns_window().ok().map(|w| w as isize);
+}
+
 fn show_popup(app: &AppHandle, volume: &VolumePopup, latest: &Arc<AtomicU64>) {
     let Some(popup) = app.get_webview_window("volume") else { return };
     let _ = app.emit("volume", volume);
-    let Ok(hwnd) = popup.hwnd().map(|h| h.0 as isize) else { return };
-    // Taking focus would point the next volume press at the wrong window.
-    platform::show_no_activate(hwnd);
+    let Some(native) = native_window(&popup) else { return };
+    // Taking focus would point the next volume press at the wrong window. macOS only lets the
+    // main thread touch windows, so both steps go there.
+    let _ = app.run_on_main_thread(move || platform::show_no_activate(native));
     latest.store(volume.id, Ordering::Relaxed);
-    let (id, latest) = (volume.id, latest.clone());
+    let (id, latest, app) = (volume.id, latest.clone(), app.clone());
     std::thread::spawn(move || {
         std::thread::sleep(POPUP_TIME);
         if latest.load(Ordering::Relaxed) == id {
-            platform::hide_window(hwnd);
+            let _ = app.run_on_main_thread(move || platform::hide_window(native));
         }
     });
 }
 
+/// On macOS a tray app shows in the Dock only while its window is open.
+fn in_dock(app: &AppHandle, shown: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::ActivationPolicy;
+        let _ = app.set_activation_policy(if shown { ActivationPolicy::Regular } else { ActivationPolicy::Accessory });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, shown);
+}
+
 fn show_main(app: &AppHandle) {
+    in_dock(app, true);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -288,11 +309,20 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// %APPDATA%\OpenUlanzi on Windows, ~/Library/Application Support/OpenUlanzi on macOS.
+fn default_config_dir() -> std::io::Result<PathBuf> {
+    #[cfg(target_os = "macos")]
+    let base = PathBuf::from(std::env::var_os("HOME").ok_or(std::io::ErrorKind::NotFound)?).join("Library/Application Support");
+    #[cfg(not(target_os = "macos"))]
+    let base = PathBuf::from(std::env::var_os("APPDATA").ok_or(std::io::ErrorKind::NotFound)?);
+    Ok(base.join("OpenUlanzi"))
+}
+
 fn config_dir() -> std::io::Result<PathBuf> {
     // Set by .cargo/config.toml for `cargo run`, so a dev build keeps its own settings.
     let dir = match std::env::var_os("OPENULANZI_HOME") {
         Some(dir) => PathBuf::from(dir),
-        None => PathBuf::from(std::env::var_os("APPDATA").ok_or(std::io::ErrorKind::NotFound)?).join("OpenUlanzi"),
+        None => default_config_dir()?,
     };
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("config.toml");
@@ -396,16 +426,22 @@ fn main() {
             if let (WindowEvent::CloseRequested { api, .. }, "main") = (event, window.label()) {
                 api.prevent_close();
                 let _ = window.hide();
+                in_dock(window.app_handle(), false);
             }
         })
         .setup(|app| {
             let handle = app.handle().clone();
             handle.state::<Shared>().plugins.start(); // here: the single-instance check has passed
             build_tray(&handle)?;
+            // Pressing keys for the deck needs Accessibility access; this asks on first run.
+            #[cfg(target_os = "macos")]
+            platform::request_permissions();
             if let Some(popup) = app.get_webview_window("volume") {
                 place_popup(&popup)?;
             }
-            if !std::env::args().any(|a| a == "--hidden") {
+            if std::env::args().any(|a| a == "--hidden") {
+                in_dock(&handle, false);
+            } else {
                 show_main(&handle);
             }
             std::thread::spawn(move || watch_devices(handle));

@@ -1,4 +1,4 @@
-# Needs Codex Minibar installed. Copy this folder into %APPDATA%\OpenUlanzi\plugins and restart OpenUlanzi.
+# Needs Codex Minibar installed. Copy this folder into %APPDATA%\OpenUlanzi\plugins (on macOS ~/Library/Application Support/OpenUlanzi/plugins) and restart OpenUlanzi.
 protocol = 1
 id = "openulanzi.codex-minibar"
 name = "Codex Minibar"

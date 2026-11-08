@@ -1,6 +1,6 @@
 name: Build release
 
-# Attaches the Windows installer and portable build to a release. Publishing a release runs this;
+# Attaches the Windows installer and portable build, and the macOS disk image, to a release. Publishing a release runs this;
 # run it by hand with a tag to rebuild an existing release, which replaces its files.
 on:
   release:
@@ -53,3 +53,36 @@ jobs:
           Copy-Item target/release/bundle/nsis/*-setup.exe "dist/OpenUlanzi-$env:VERSION-setup.exe"
           Copy-Item target/release/openulanzi-app.exe "dist/OpenUlanzi-$env:VERSION-portable.exe"
           gh release upload "$env:TAG" (Get-ChildItem dist).FullName --clobber --repo "$env:GITHUB_REPOSITORY"
+
+  macos:
+    runs-on: macos-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Check the tag matches the app version
+        run: |
+          version=$(jq -r .version app/tauri.conf.json)
+          if [ "$TAG" != "v$version" ]; then echo "Tag $TAG does not match app version $version"; exit 1; fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      # One app for Apple silicon and Intel. It is signed ad hoc, not notarised.
+      - name: Build
+        working-directory: app
+        run: npx --yes @tauri-apps/cli@2.12.4 build --target universal-apple-darwin --bundles dmg
+
+      - name: Attach to the release
+        run: |
+          mkdir -p dist
+          cp target/universal-apple-darwin/release/bundle/dmg/*.dmg "dist/OpenUlanzi-$VERSION-macos.dmg"
+          gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"

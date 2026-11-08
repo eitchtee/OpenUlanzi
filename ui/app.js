@@ -109,6 +109,8 @@ const ACTION_GROUPS = [
     } },
   ]],
 ];
+// macOS has no volume per app, so those actions would only report an error.
+if (IS_MAC) ACTION_GROUPS.splice(ACTION_GROUPS.findIndex(([name]) => name === 'Focused app volume'), 1);
 const BUILT_IN_GROUPS = ACTION_GROUPS.length;
 let PALETTE = ACTION_GROUPS.flatMap(([, items]) => items);
 
@@ -1138,7 +1140,7 @@ const ACTION_TYPES = [
   ['none', 'Nothing'], ['hotkey', 'Hotkey'], ['text', 'Type text'], ['open', 'Open app, file or website'], ['close', 'Close app'],
   ['page', 'Open page'], ['back', 'Go back'], ['profile', 'Switch profile'], ['next_page', 'Next page'], ['prev_page', 'Previous page'],
   ['scroll_up', 'Scroll up'], ['scroll_down', 'Scroll down'], ['scroll_left', 'Scroll left'], ['scroll_right', 'Scroll right'],
-  ['set_look', 'Change look'], ['reset_look', 'Reset look'], ['block_input', 'Block input'], ['unblock_input', 'Unblock input'], ['brightness', 'Change deck brightness'], ['app_volume', 'Change app volume'], ['app_volume_reset', 'Reset app volume'], ['play_sound', 'Play sound file'], ['stop_sound', 'Stop sound'],
+  ['set_look', 'Change look'], ['reset_look', 'Reset look'], ['block_input', 'Block input'], ['unblock_input', 'Unblock input'], ['brightness', 'Change deck brightness'], ...(IS_MAC ? [] : [['app_volume', 'Change app volume'], ['app_volume_reset', 'Reset app volume']]), ['play_sound', 'Play sound file'], ['stop_sound', 'Stop sound'],
   ['sequence', 'Sequence'], ['toggle', 'Toggle between actions'], ['random', 'Random action'],
   ['obs_toggle_record', 'OBS: Record'], ['obs_toggle_record_pause', 'OBS: Pause recording'], ['obs_toggle_stream', 'OBS: Stream'],
   ['obs_toggle_virtual_cam', 'OBS: Virtual camera'], ['obs_toggle_replay_buffer', 'OBS: Replay buffer'], ['obs_save_replay', 'OBS: Save replay'],
@@ -1346,7 +1348,7 @@ function actionEditor(label, action, commit, options = {}) {
     parts.push(h('div', { class: 'row' }, textField('open', 'Path, folder, URL or command'), browseButton([], (path) => commit({ open: path }))));
     parts.push(h('p', { class: 'hint' }, 'Works like the Run dialog: notepad file.txt, ms-settings:, or shell:AppsFolder\<app id> for Store apps. Quote a path with spaces to give it arguments.'));
   } else if (type === 'close') {
-    parts.push(textField('close', 'Program, like notepad.exe'));
+    parts.push(textField('close', SYS('Program, like notepad.exe', 'App, like Safari')));
     parts.push(h('p', { class: 'hint' }, 'Leave it empty to close the focused window.'));
   } else if (type === 'page') {
     const select = h('select', { onchange: () => commit({ page: select.value }) }, ...pageOptions(action.page));
@@ -1570,7 +1572,7 @@ function drawInspector() {
     const targets = selectedList();
     return root.replaceChildren(
       h('div', { class: 'inspector-head' }, h('h2', {}, `${targets.length} controls selected`), iconButton('x-bold', 'Close', () => select(null))),
-      h('p', { class: 'hint' }, 'Settings are edited one control at a time. Ctrl+C copies these, Ctrl+V pastes onto them, and Delete clears them.'),
+      h('p', { class: 'hint' }, `Settings are edited one control at a time. ${SYS('Ctrl', '⌘')}+C copies these, ${SYS('Ctrl', '⌘')}+V pastes onto them, and Delete clears them.`),
       h('div', { class: 'row' },
         h('button', { type: 'button', onclick: () => copyControls(targets) }, 'Copy'),
         h('button', { type: 'button', disabled: !state.clipboard, onclick: () => pasteControls(targets) }, 'Paste'),
@@ -1582,7 +1584,7 @@ function drawInspector() {
     return root.replaceChildren(section('Plugin page', ...viewFields(p.plugin, (plugin) => { p.plugin = plugin; save(); draw(); }, hint)));
   }
   if (control === null) {
-    return root.replaceChildren(h('p', { class: 'panel-empty' }, 'Select a key, side button or knob to set it up. Ctrl+click or Shift+click selects several.'));
+    return root.replaceChildren(h('p', { class: 'panel-empty' }, `Select a key, side button or knob to set it up. ${SYS('Ctrl', '⌘')}+click or Shift+click selects several.`));
   }
 
   const b = binding(control);
@@ -1670,7 +1672,7 @@ function profileDialog(index) {
     h('div', { class: 'profile-form' },
       section('Name', name),
       section('Use this profile for', h('p', { class: 'hint' }, 'Every field you fill in has to match, and the first matching profile from the top wins. Leave them all empty for a profile that only opens through an action or as the default.'),
-      text('exe', 'Program', 'For example zed.exe, or a full path.'),
+      text('exe', SYS('Program', 'App'), SYS('For example zed.exe, or a full path.', 'For example Zed, Zed.app or a full path.')),
       text('title', 'Window title contains'),
       text('title_regex', 'Window title matches regex')),
       section('When an app matches',
@@ -1698,7 +1700,7 @@ function dateField() {
     },
   }, ...DATE_STYLES.map(([value, text]) => h('option', { value, selected: value === cfg.date_format }, text)),
   h('option', { value: 'custom', selected: !known }, 'Custom'));
-  return field('Date', h('div', { class: 'date-style' }, style, custom), 'Custom uses d, M and y, as in dd/MM/yy. Names follow the Windows language.');
+  return field('Date', h('div', { class: 'date-style' }, style, custom), `Custom uses d, M and y, as in dd/MM/yy. Names follow the ${SYS('Windows', 'macOS')} language.`);
 }
 
 function forgetButton() {
@@ -1729,6 +1731,10 @@ function drawUpdate() {
   root.hidden = !offer;
   if (!offer) return root.replaceChildren();
   const notes = h('button', { class: 'link', onclick: () => invoke('open_release_notes') }, "What's new");
+  if (offer.install === 'manual') {
+    const get = h('button', { class: 'plain primary', onclick: () => invoke('open_release_notes') }, 'Download');
+    return root.replaceChildren(h('p', {}, `Version ${offer.version} is out`), get);
+  }
   if (offer.install === 'dev') {
     return root.replaceChildren(h('p', {}, `Version ${offer.version} is out`), notes);
   }
@@ -1799,7 +1805,7 @@ const pluginRows = () => (state.plugins.length
 function pluginSettings() {
   return section('Plugins',
     h('div', { id: 'plugin-list' }, ...pluginRows()),
-    h('p', { class: 'hint' }, 'A plugin is a program that runs with your full permissions, so only add ones you trust. To add one, put its folder in the plugins folder, then quit from the tray and reopen OpenUlanzi.'),
+    h('p', { class: 'hint' }, `A plugin is a program that runs with your full permissions, so only add ones you trust. To add one, put its folder in the plugins folder, then quit from the ${SYS('tray', 'menu bar icon')} and reopen OpenUlanzi.`),
     h('button', { class: 'plain', onclick: () => invoke('open_plugins_folder').catch((e) => notify(String(e), true)) }, 'Open plugins folder'));
 }
 
@@ -1831,17 +1837,17 @@ function drawSettingsView() {
     .map(([value, text]) => h('option', { value, selected: value === cfg.model }, text)));
   $('stage').replaceChildren(h('div', { class: 'sheet' },
     h('h1', {}, 'Settings'),
-    h('p', {}, 'These apply to this deck. Start at login is in the tray menu.'),
+    h('p', {}, `These apply to this deck. Start at login is in the ${SYS('tray', 'menu bar')} menu.`),
     section('This deck',
       field('Deck name', name),
       field('Model', model, 'The deck cannot report its model, so this decides which controls are shown.'),
       forgetButton()),
     section('Brightness',
       number('brightness', 'While in use', 0, 100),
-      number('locked_brightness', 'While the PC is locked', 0, 100)),
+      number('locked_brightness', SYS('While the PC is locked', 'While the Mac is locked'), 0, 100)),
     section('Sleep',
       number('sleep_minutes', 'Turn the deck off after (minutes)', 0, 1440, 'With no keyboard or mouse input for this long. Any input wakes it, and so does pressing the deck. 0 keeps it on.'),
-      toggle('sleep_with_display', 'Turn the deck off when Windows turns the screens off')),
+      toggle('sleep_with_display', SYS('Turn the deck off when Windows turns the screens off', 'Turn the deck off when the display sleeps'))),
     section('Timing',
       number('hold_ms', 'Hold to show a page (ms)', 50, 2000, 'For keys that also have a click action.'),
       number('hold_action_ms', 'Hold to run an action (ms)', 150, 5000, 'Keys can set their own time.'),
