@@ -20,6 +20,9 @@ const HOUSEKEEPING: Duration = Duration::from_secs(1);
 const LOCK_CHECK: Duration = Duration::from_millis(100);
 /// Pressing the deck can't turn the screens on, so it stays usable this long without them.
 const DECK_ONLY_AWAKE: Duration = Duration::from_secs(30);
+/// The D200X answers the sleep command with reports Windows counts as user input, so input
+/// this soon after the deck went to sleep is the deck's own echo, not someone coming back.
+const SLEEP_ECHO: Duration = Duration::from_secs(2);
 const STATS_REFRESH: Duration = Duration::from_secs(2);
 /// Time a bundle gets to land before the next write. The deck sends no reply when it is done.
 const BUNDLE_SETTLE: Duration = Duration::from_millis(300);
@@ -66,6 +69,8 @@ struct App<F> {
     brightness: u8,
     locked: bool,
     asleep: bool,
+    /// When idle put the deck to sleep.
+    slept_at: Option<Instant>,
     last_deck_input: Instant,
     wake: Arc<AtomicBool>,
     on_status: F,
@@ -98,6 +103,11 @@ fn shown(display: Display, now: &platform::Now) -> String {
         }
         _ => now.date.clone(),
     }
+}
+
+/// The last PC input came within SLEEP_ECHO of the deck going to sleep `asleep_for` ago.
+fn sleep_echo(asleep_for: Duration, pc_idle: Duration) -> bool {
+    asleep_for.saturating_sub(pc_idle) < SLEEP_ECHO
 }
 
 fn modified(path: &Path) -> Option<SystemTime> {
@@ -335,12 +345,18 @@ impl<F: FnMut(&Status)> App<F> {
     }
 
     fn check_lock(&mut self, deck: &mut Deck) -> Result<()> {
-        let idle = platform::idle_time().min(self.last_deck_input.elapsed());
         let limit = Duration::from_secs(self.engine.cfg.sleep_minutes as u64 * 60);
+        let mut pc_idle = platform::idle_time();
+        if self.slept_at.is_some_and(|at| sleep_echo(at.elapsed(), pc_idle)) {
+            pc_idle = pc_idle.max(limit);
+        }
+        let idle = pc_idle.min(self.last_deck_input.elapsed());
         let screens_off = self.engine.cfg.sleep_with_display
             && platform::display_off()
             && self.last_deck_input.elapsed() >= DECK_ONLY_AWAKE;
-        self.asleep = screens_off || (!limit.is_zero() && idle >= limit);
+        let idle_sleep = !limit.is_zero() && idle >= limit;
+        self.slept_at = if idle_sleep { self.slept_at.or(Some(Instant::now())) } else { None };
+        self.asleep = screens_off || idle_sleep;
         let locked = platform::session_locked() || self.asleep;
         if locked != self.locked {
             self.locked = locked;
@@ -435,6 +451,7 @@ pub fn run(
         path,
         locked: false,
         asleep: false,
+        slept_at: None,
         last_deck_input: Instant::now(),
         wake,
         on_status,
@@ -476,6 +493,13 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_decks_reply_to_sleep_does_not_wake_it() {
+        let s = Duration::from_secs;
+        assert!(sleep_echo(s(60), s(59)), "input 1 s after sleeping is the deck's reply");
+        assert!(!sleep_echo(s(60), s(10)), "input 50 s after sleeping is someone back");
+    }
 
     #[test]
     fn digital_faces_are_due_each_minute_and_the_dial_each_day() {
