@@ -154,7 +154,10 @@ impl<F: FnMut(&Status)> App<F> {
     fn run_action(&mut self, deck: &mut Deck, action: Action) -> Result<()> {
         // An action failing is the user's to read about, not a reason to drop the deck.
         let outcome = match &action {
-            Action::Hotkey(h) => platform::send_hotkey(h),
+            Action::Hotkey(h) => platform::send_hotkey(h.keys(), h.gap()),
+            Action::KeyDown(keys) => platform::key_down(keys),
+            Action::KeyUp(keys) => platform::key_up(keys),
+            Action::ReleaseKeys => platform::release_held(),
             Action::Open(target) => platform::open(target),
             Action::Brightness(delta) => {
                 self.brightness = (self.brightness as i32 + delta).clamp(0, 100) as u8;
@@ -187,13 +190,20 @@ impl<F: FnMut(&Status)> App<F> {
                 // shortcut: a sequence nested in a blocking one does not inherit it; pass the flag
                 // along if nested sequences ever need to run past a block.
                 let blocker = steps.iter().any(|s| s.runs(&Action::BlockInput));
+                // shortcut: a nested sequence without key_down never lets go of the outer one's keys,
+                // but one with key_down lets go of all of them when it ends.
+                let holds = steps.iter().any(|s| matches!(s, Action::KeyDown(_)));
                 std::thread::spawn(move || {
                     for step in steps {
                         if let Action::Delay(ms) = step {
                             std::thread::sleep(Duration::from_millis(ms));
                         } else if sender.send((step, blocker)).is_err() {
-                            return;
+                            break;
                         }
+                    }
+                    // Through the deck's thread, after the steps queued before it.
+                    if holds && sender.send((Action::ReleaseKeys, blocker)).is_err() {
+                        let _ = platform::release_held();
                     }
                 });
                 Ok(())
@@ -377,6 +387,11 @@ impl<F: FnMut(&Status)> App<F> {
 
     fn run_steps(&mut self, deck: &mut Deck) -> Result<()> {
         while let Ok((step, blocker)) = self.steps.1.try_recv() {
+            // Past the engine, which would drop it while input is blocked and leave keys down.
+            if step == Action::ReleaseKeys {
+                self.run_action(deck, step)?;
+                continue;
+            }
             for action in self.engine.perform(step, blocker) {
                 self.run_action(deck, action)?;
             }

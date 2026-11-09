@@ -18,7 +18,10 @@
 #          focus; others = true moves on to other apps that have a profile
 #        | { one_shot = { page = "name" } } returns after the next button press; also takes profile
 #        | { scroll_up = 3 } | { scroll_down = 3 } | { scroll_left = 3 } | { scroll_right = 3 }
+#        | { hotkey = { keys = "ctrl+shift+f13", gap = 30 } } waits 30 ms between key events (default 10, at most 100)
 #        | { sequence = [..., { delay = 100 }, ...] } | { toggle = [...] } | { random = [...] }
+#          a sequence can also hold keys: { key_down = "ctrl" }, { delay = 50 }, { hotkey = "z" }, { key_up = "ctrl" };
+#          keys still down when it ends are let go then
 #        | { obs = "toggle_record" }, also "toggle_record_pause", "toggle_stream", "toggle_virtual_cam",
 #          "toggle_replay_buffer", "save_replay", "toggle_studio_mode", "transition", "screenshot"
 #        | { obs = { scene = "name" } }, also scene_collection, profile, scene_transition, toggle_mute, chapter

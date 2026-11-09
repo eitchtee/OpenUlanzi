@@ -28,7 +28,14 @@ pub type Surfaces = HashMap<String, HashMap<u8, Binding>>;
 #[serde(remote = "Self", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
     /// `ctrl+shift+f13`, `volume_up`, `vkea`, ...
-    Hotkey(String),
+    Hotkey(Hotkey),
+    /// Sequence steps that press keys and keep them down, then let go of them. Keys still down
+    /// when the sequence ends are let go then.
+    KeyDown(String),
+    KeyUp(String),
+    /// Sent by a sequence with `key_down` steps once its last step has run.
+    #[serde(skip)]
+    ReleaseKeys,
     /// Types the text, whatever the keyboard layout.
     Text(String),
     /// Any file, shortcut, script or URL, launched as if double-clicked.
@@ -121,6 +128,37 @@ impl<'de> Deserialize<'de> for Action {
             Some("next_page") => Ok(Action::NextPage { wrap: true }),
             Some("prev_page") => Ok(Action::PrevPage { wrap: true }),
             _ => Action::deserialize(value).map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+/// `"ctrl+c"`, or `{ keys = "ctrl+c", gap = 30 }` to wait longer between key events.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Hotkey {
+    Keys(String),
+    Paced(PacedHotkey),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PacedHotkey {
+    pub keys: String,
+    /// Milliseconds between key events.
+    pub gap: u64,
+}
+
+impl Hotkey {
+    pub fn keys(&self) -> &str {
+        match self {
+            Hotkey::Keys(keys) | Hotkey::Paced(PacedHotkey { keys, .. }) => keys,
+        }
+    }
+
+    pub fn gap(&self) -> u64 {
+        match self {
+            Hotkey::Keys(_) => platform::KEY_GAP,
+            Hotkey::Paced(p) => p.gap,
         }
     }
 }
@@ -578,11 +616,19 @@ fn check_action(action: &Action, pages: &[String], profiles: &[String]) -> Resul
         Action::Profile(p) if !profiles.contains(p) && p != APP_LAYER && p != DEFAULT_PROFILE => {
             bail!("unknown profile {p:?}")
         }
-        Action::Hotkey(h) if !h.is_empty() => platform::parse_hotkey(h).map(|_| ()),
-        Action::OneShot(inner) => check_action(inner, pages, profiles),
-        Action::Sequence(list) | Action::Toggle(list) | Action::Random(list) => {
-            list.iter().try_for_each(|a| check_action(a, pages, profiles))
+        Action::Hotkey(h) if h.gap() > platform::MAX_KEY_GAP => {
+            bail!("a hotkey waits at most {} ms between keys; hold keys longer with key_down steps", platform::MAX_KEY_GAP)
         }
+        Action::Hotkey(h) if !h.keys().is_empty() => platform::parse_hotkey(h.keys()).map(|_| ()),
+        // Only a sequence lets go of the keys at its end, so nothing else may hold them.
+        Action::KeyDown(_) | Action::KeyUp(_) => bail!("key_down and key_up only work as steps of a sequence"),
+        Action::OneShot(inner) => check_action(inner, pages, profiles),
+        Action::Sequence(list) => list.iter().try_for_each(|a| match a {
+            Action::KeyDown(k) | Action::KeyUp(k) if !k.is_empty() => platform::parse_hotkey(k).map(|_| ()),
+            Action::KeyDown(_) | Action::KeyUp(_) => Ok(()),
+            a => check_action(a, pages, profiles),
+        }),
+        Action::Toggle(list) | Action::Random(list) => list.iter().try_for_each(|a| check_action(a, pages, profiles)),
         Action::SetLook(look) => {
             [&look.color, &look.background].into_iter().flatten().try_for_each(|c| check_color(c))?;
             [&look.icon_crop, &look.image_crop].into_iter().flatten().try_for_each(Crop::check)
@@ -889,6 +935,18 @@ mod tests {
     }
 
     #[test]
+    fn paced_hotkeys_and_held_keys_are_saved() {
+        let text = "[[profile]]\nname='p'\n[[profile.page]]\nname='a'\n[profile.page.keys.0]\naction={hotkey={keys='ctrl+z',gap=40}}\n[profile.page.keys.1]\naction={sequence=[{key_down='ctrl'},{delay=50},{hotkey='z'},{key_up='ctrl'}]}";
+        let back = Config::parse(&toml::to_string_pretty(&Config::parse(text).unwrap()).unwrap()).unwrap();
+        let keys = &back.profiles[0].pages[0].keys;
+        let paced = Hotkey::Paced(PacedHotkey { keys: "ctrl+z".into(), gap: 40 });
+        assert_eq!(keys[&0].action, Some(Action::Hotkey(paced)));
+        let Some(Action::Sequence(steps)) = &keys[&1].action else { panic!("not a sequence") };
+        assert_eq!(steps[0], Action::KeyDown("ctrl".into()));
+        assert_eq!(steps[2], Action::Hotkey(Hotkey::Keys("z".into())));
+    }
+
+    #[test]
     fn one_shot_is_checked_and_saved() {
         let good = "[[profile]]\nname='p'\n[[profile.page]]\nname='a'\n[profile.page.keys.0]\naction={one_shot={page='a'}}";
         let cfg = Config::parse(good).unwrap();
@@ -950,6 +1008,11 @@ mod tests {
             format!("{page}[profile.page.keys.0]\naction={{show='a'}}"),
             format!("{page}[profile.page.keys.0]\nhold={{sequence=[{{show='a'}}]}}"),
             format!("{page}[profile.page.keys.0]\naction={{hotkey='ctrl+nope'}}"),
+            format!("{page}[profile.page.keys.0]\naction={{hotkey={{keys='ctrl+c',gap=500}}}}"),
+            format!("{page}[profile.page.keys.0]\naction={{hotkey={{keys='ctrl+c',typo=5}}}}"),
+            format!("{page}[profile.page.keys.0]\naction={{key_down='ctrl'}}"),
+            format!("{page}[profile.page.keys.0]\naction={{toggle=[{{key_down='ctrl'}}]}}"),
+            format!("{page}[profile.page.keys.0]\naction={{sequence=[{{key_up='nope'}}]}}"),
             format!("{page}[profile.page.keys.0]\ntypo=1"),
             format!("{page}[profile.page.keys.0]\ncolor='red\"/><x'"),
             format!("[[profile]]\nname='p'\ntitle_regex='('\n[[profile.page]]\nname='a'"),

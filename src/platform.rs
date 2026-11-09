@@ -19,7 +19,8 @@ use std::path::Path;
 use std::os::windows::process::CommandExt;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Once;
+use std::collections::HashMap;
+use std::sync::{Mutex, Once};
 use std::time::Duration;
 use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, HWND, LPARAM, WIN32_ERROR, WPARAM};
 use windows::Win32::System::Power::{
@@ -61,41 +62,30 @@ fn vk(name: &str) -> Option<u16> {
     if let Some(n) = name.strip_prefix('f').and_then(|n| n.parse::<u16>().ok()) {
         return (1..=24).contains(&n).then_some(VK_F1.0 + n - 1);
     }
-    let key = match name {
-        "ctrl" => VK_LCONTROL,
-        "rctrl" => VK_RCONTROL,
-        "shift" => VK_LSHIFT,
-        "rshift" => VK_RSHIFT,
-        "alt" => VK_LMENU,
-        "altgr" | "ralt" => VK_RMENU,
-        "win" => VK_LWIN,
-        "rwin" => VK_RWIN,
-        "enter" => VK_RETURN,
-        "esc" => VK_ESCAPE,
-        "tab" => VK_TAB,
-        "space" => VK_SPACE,
-        "backspace" => VK_BACK,
-        "delete" => VK_DELETE,
-        "insert" => VK_INSERT,
-        "home" => VK_HOME,
-        "end" => VK_END,
-        "pageup" => VK_PRIOR,
-        "pagedown" => VK_NEXT,
-        "up" => VK_UP,
-        "down" => VK_DOWN,
-        "left" => VK_LEFT,
-        "right" => VK_RIGHT,
-        "printscreen" => VK_SNAPSHOT,
-        "volume_up" => VK_VOLUME_UP,
-        "volume_down" => VK_VOLUME_DOWN,
-        "mute" => VK_VOLUME_MUTE,
-        "play_pause" => VK_MEDIA_PLAY_PAUSE,
-        "next_track" => VK_MEDIA_NEXT_TRACK,
-        "prev_track" => VK_MEDIA_PREV_TRACK,
-        "media_stop" => VK_MEDIA_STOP,
-        _ => return None,
-    };
-    Some(key.0)
+    if name == "ralt" {
+        return Some(VK_RMENU.0);
+    }
+    NAMED_KEYS.iter().find(|(n, _)| *n == name).map(|(_, k)| k.0)
+}
+
+/// Key names a hotkey can use besides letters, digits, `f1`-`f24` and `vkXX`.
+const NAMED_KEYS: [(&str, VIRTUAL_KEY); 31] = [
+    ("ctrl", VK_LCONTROL), ("rctrl", VK_RCONTROL), ("shift", VK_LSHIFT), ("rshift", VK_RSHIFT), ("alt", VK_LMENU),
+    ("altgr", VK_RMENU), ("win", VK_LWIN), ("rwin", VK_RWIN), ("enter", VK_RETURN), ("esc", VK_ESCAPE), ("tab", VK_TAB),
+    ("space", VK_SPACE), ("backspace", VK_BACK), ("delete", VK_DELETE), ("insert", VK_INSERT), ("home", VK_HOME),
+    ("end", VK_END), ("pageup", VK_PRIOR), ("pagedown", VK_NEXT), ("up", VK_UP), ("down", VK_DOWN), ("left", VK_LEFT),
+    ("right", VK_RIGHT), ("printscreen", VK_SNAPSHOT), ("volume_up", VK_VOLUME_UP), ("volume_down", VK_VOLUME_DOWN),
+    ("mute", VK_VOLUME_MUTE), ("play_pause", VK_MEDIA_PLAY_PAUSE), ("next_track", VK_MEDIA_NEXT_TRACK),
+    ("prev_track", VK_MEDIA_PREV_TRACK), ("media_stop", VK_MEDIA_STOP),
+];
+
+/// The name a hotkey uses for a key code, the reverse of `vk`.
+fn token(key: u16) -> String {
+    match key {
+        0x30..=0x39 | 0x41..=0x5A => (key as u8 as char).to_ascii_lowercase().to_string(),
+        k if (VK_F1.0..=VK_F24.0).contains(&k) => format!("f{}", k - VK_F1.0 + 1),
+        k => NAMED_KEYS.iter().find(|(_, v)| v.0 == k).map_or_else(|| format!("vk{k:02x}"), |(n, _)| n.to_string()),
+    }
 }
 
 pub fn parse_hotkey(hotkey: &str) -> Result<Vec<u16>> {
@@ -132,18 +122,138 @@ fn key_input(key: u16, up: bool) -> INPUT {
     }
 }
 
-/// Press all keys in order, release in reverse. Windows silently drops this for elevated targets
-/// when we are not elevated ourselves (UIPI).
-pub fn send_hotkey(hotkey: &str) -> Result<()> {
-    let keys = parse_hotkey(hotkey)?;
-    let mut inputs: Vec<INPUT> = keys.iter().map(|k| key_input(*k, false)).collect();
-    inputs.extend(keys.iter().rev().map(|k| key_input(*k, true)));
-    let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
-    if sent as usize != inputs.len() {
-        bail!("SendInput accepted {sent} of {} events", inputs.len());
+/// Milliseconds between key events unless a hotkey sets its own.
+pub const KEY_GAP: u64 = 10;
+/// Hotkeys run on the deck's thread, so their gaps stay short; longer holds belong in a sequence.
+pub const MAX_KEY_GAP: u64 = 100;
+
+/// Apps like Zed read modifier state when they handle the key; sent in one burst, the modifiers
+/// are already released by then and Ctrl+Shift+' types a plain ".
+fn send_keys(keys: impl IntoIterator<Item = (u16, bool)>, gap: u64) -> Result<()> {
+    for (i, (key, up)) in keys.into_iter().enumerate() {
+        if i > 0 {
+            std::thread::sleep(Duration::from_millis(gap));
+        }
+        if unsafe { SendInput(&[key_input(key, up)], size_of::<INPUT>() as i32) } != 1 {
+            bail!("SendInput rejected key event {}", i + 1);
+        }
     }
     Ok(())
 }
+
+/// Press all keys in order, release in reverse. Windows silently drops this for elevated targets
+/// when we are not elevated ourselves (UIPI).
+pub fn send_hotkey(hotkey: &str, gap: u64) -> Result<()> {
+    let keys = parse_hotkey(hotkey)?;
+    let downs = keys.iter().map(|k| (*k, false));
+    send_keys(downs.chain(keys.iter().rev().map(|k| (*k, true))), gap)
+}
+
+/// Keys a sequence pressed with `key_down` and has not let go yet.
+static HELD: Mutex<Vec<u16>> = Mutex::new(Vec::new());
+
+fn held() -> std::sync::MutexGuard<'static, Vec<u16>> {
+    HELD.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+pub fn key_down(keys: &str) -> Result<()> {
+    let keys = parse_hotkey(keys)?;
+    // Noted before sending, so a failure halfway still gets every key let go.
+    held().extend(&keys);
+    send_keys(keys.into_iter().map(|k| (k, false)), KEY_GAP)
+}
+
+pub fn key_up(keys: &str) -> Result<()> {
+    let keys = parse_hotkey(keys)?;
+    held().retain(|k| !keys.contains(k));
+    send_keys(keys.into_iter().rev().map(|k| (k, true)), KEY_GAP)
+}
+
+/// Lets go of every key a sequence still holds, so Ctrl can never stay stuck down.
+pub fn release_held() -> Result<()> {
+    let mut keys = std::mem::take(&mut *held());
+    keys.reverse();
+    let mut seen = Vec::new();
+    keys.retain(|k| !seen.contains(k) && { seen.push(*k); true });
+    send_keys(keys.into_iter().map(|k| (k, true)), KEY_GAP)
+}
+
+/// A key the hotkey picker offers.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct KeyInfo {
+    /// Windows key code, which the editor's key events report as `keyCode`.
+    pub code: u16,
+    pub token: String,
+    pub name: String,
+    /// What the key types on this PC's keyboard layout, if anything.
+    pub label: Option<String>,
+}
+
+/// The picker's view of the keyboard: every key code with a name, and the key each physical
+/// position (scan code) has on the layout of the window in front, which is the editor.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Keyboard {
+    pub keys: Vec<KeyInfo>,
+    pub scans: HashMap<u16, String>,
+}
+
+pub fn keyboard() -> Keyboard {
+    let thread = unsafe { GetWindowThreadProcessId(GetForegroundWindow(), None) };
+    let layout = unsafe { GetKeyboardLayout(thread) };
+    let label = |key: u16| {
+        // The high bit marks a dead key; the character is still in the low word.
+        let c = unsafe { MapVirtualKeyExW(key as u32, MAPVK_VK_TO_CHAR, Some(layout)) } & 0xFFFF;
+        char::from_u32(c).filter(|c| *c != '\0' && !c.is_control() && !c.is_whitespace()).map(String::from)
+    };
+    let digits_and_letters = (0x30..=0x39).chain(0x41..=0x5A).map(|k: u16| (k, (k as u8 as char).to_string()));
+    let functions = (1..=24).map(|n| (VK_F1.0 + n - 1, format!("F{n}")));
+    let named = KEY_NAMES.iter().map(|(k, n)| (k.0, n.to_string()));
+    let keys = digits_and_letters
+        .chain(functions)
+        .chain(named)
+        .map(|(key, name)| KeyInfo { code: key, token: token(key), name, label: label(key) })
+        .collect();
+    let scans = (1u32..0x80)
+        .filter_map(|scan| {
+            let key = unsafe { MapVirtualKeyExW(scan, MAPVK_VSC_TO_VK_EX, Some(layout)) } as u16;
+            (key != 0).then(|| (scan as u16, token(key)))
+        })
+        .collect();
+    Keyboard { keys, scans }
+}
+
+/// Every key code Windows names, apart from letters, digits and F-keys.
+const KEY_NAMES: &[(VIRTUAL_KEY, &str)] = &[
+    (VK_LCONTROL, "Left Ctrl"), (VK_RCONTROL, "Right Ctrl"), (VK_LSHIFT, "Left Shift"), (VK_RSHIFT, "Right Shift"),
+    (VK_LMENU, "Left Alt"), (VK_RMENU, "Right Alt (AltGr)"), (VK_LWIN, "Left Windows"), (VK_RWIN, "Right Windows"),
+    (VK_CONTROL, "Ctrl (either side)"), (VK_SHIFT, "Shift (either side)"), (VK_MENU, "Alt (either side)"),
+    (VK_APPS, "Menu"), (VK_RETURN, "Enter"), (VK_ESCAPE, "Esc"), (VK_TAB, "Tab"), (VK_SPACE, "Space"),
+    (VK_BACK, "Backspace"), (VK_DELETE, "Delete"), (VK_INSERT, "Insert"), (VK_HOME, "Home"), (VK_END, "End"),
+    (VK_PRIOR, "Page up"), (VK_NEXT, "Page down"), (VK_UP, "Up"), (VK_DOWN, "Down"), (VK_LEFT, "Left"),
+    (VK_RIGHT, "Right"), (VK_CAPITAL, "Caps lock"), (VK_NUMLOCK, "Num lock"), (VK_SCROLL, "Scroll lock"),
+    (VK_PAUSE, "Pause"), (VK_CANCEL, "Break"), (VK_SNAPSHOT, "Print screen"), (VK_CLEAR, "Clear"),
+    (VK_SELECT, "Select"), (VK_PRINT, "Print"), (VK_EXECUTE, "Execute"), (VK_HELP, "Help"), (VK_SLEEP, "Sleep"),
+    (VK_NUMPAD0, "Numpad 0"), (VK_NUMPAD1, "Numpad 1"), (VK_NUMPAD2, "Numpad 2"), (VK_NUMPAD3, "Numpad 3"),
+    (VK_NUMPAD4, "Numpad 4"), (VK_NUMPAD5, "Numpad 5"), (VK_NUMPAD6, "Numpad 6"), (VK_NUMPAD7, "Numpad 7"),
+    (VK_NUMPAD8, "Numpad 8"), (VK_NUMPAD9, "Numpad 9"), (VK_MULTIPLY, "Numpad *"), (VK_ADD, "Numpad +"),
+    (VK_SEPARATOR, "Numpad separator"), (VK_SUBTRACT, "Numpad -"), (VK_DECIMAL, "Numpad ."), (VK_DIVIDE, "Numpad /"),
+    (VK_VOLUME_MUTE, "Mute"), (VK_VOLUME_DOWN, "Volume down"), (VK_VOLUME_UP, "Volume up"),
+    (VK_MEDIA_PLAY_PAUSE, "Play or pause"), (VK_MEDIA_STOP, "Stop media"), (VK_MEDIA_NEXT_TRACK, "Next track"),
+    (VK_MEDIA_PREV_TRACK, "Previous track"), (VK_BROWSER_BACK, "Browser back"), (VK_BROWSER_FORWARD, "Browser forward"),
+    (VK_BROWSER_REFRESH, "Browser refresh"), (VK_BROWSER_STOP, "Browser stop"), (VK_BROWSER_SEARCH, "Browser search"),
+    (VK_BROWSER_FAVORITES, "Browser favorites"), (VK_BROWSER_HOME, "Browser home"), (VK_LAUNCH_MAIL, "Launch mail"),
+    (VK_LAUNCH_MEDIA_SELECT, "Launch media player"), (VK_LAUNCH_APP1, "Launch app 1"), (VK_LAUNCH_APP2, "Launch app 2"),
+    (VK_OEM_1, "OEM 1 (US ;)"), (VK_OEM_PLUS, "OEM plus (US =)"), (VK_OEM_COMMA, "OEM comma (US ,)"),
+    (VK_OEM_MINUS, "OEM minus (US -)"), (VK_OEM_PERIOD, "OEM period (US .)"), (VK_OEM_2, "OEM 2 (US /)"),
+    (VK_OEM_3, "OEM 3 (US `)"), (VK_ABNT_C1, "ABNT C1 (Brazilian /)"), (VK_ABNT_C2, "ABNT C2 (Brazilian numpad .)"),
+    (VK_OEM_4, "OEM 4 (US [)"), (VK_OEM_5, "OEM 5 (US \\)"), (VK_OEM_6, "OEM 6 (US ])"), (VK_OEM_7, "OEM 7 (US ')"),
+    (VK_OEM_8, "OEM 8"), (VK_OEM_102, "OEM 102 (beside left Shift)"), (VK_OEM_CLEAR, "OEM clear"),
+    (VK_KANA, "IME Kana or Hangul"), (VK_IME_ON, "IME on"), (VK_JUNJA, "IME Junja"), (VK_FINAL, "IME final"),
+    (VK_KANJI, "IME Kanji or Hanja"), (VK_IME_OFF, "IME off"), (VK_CONVERT, "IME convert"),
+    (VK_NONCONVERT, "IME nonconvert"), (VK_ACCEPT, "IME accept"), (VK_MODECHANGE, "IME mode change"),
+    (VK_PROCESSKEY, "IME process"), (VK_ATTN, "Attn"), (VK_CRSEL, "CrSel"), (VK_EXSEL, "ExSel"),
+    (VK_EREOF, "Erase EOF"), (VK_PLAY, "Play"), (VK_ZOOM, "Zoom"), (VK_PA1, "PA1"),
+];
 
 /// Like the Run dialog: a file, folder, URL or `shell:` target, or a program followed by its
 /// arguments. A path with spaces is taken whole when it exists, and otherwise needs quotes.
@@ -613,5 +723,15 @@ mod tests {
         for bad in ["", "ctrl+", "f25", "f0", "nope", "vk", "vk00", "vkzz", "vk100"] {
             assert!(parse_hotkey(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn every_key_name_reads_back_as_its_key() {
+        for key in 1..=0xFF {
+            assert_eq!(parse_hotkey(&token(key)).unwrap(), vec![key], "{}", token(key));
+        }
+        let board = keyboard();
+        assert!(board.keys.iter().any(|k| k.token == "ctrl" && k.name == "Left Ctrl"));
+        assert_eq!(board.scans.get(&0x1D).map(String::as_str), Some("ctrl"), "left Ctrl is scan code 1D on every layout");
     }
 }
