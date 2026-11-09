@@ -276,9 +276,7 @@ kbd { padding: 1px 7px; border-radius: 4px; background: var(--body); box-shadow:
 .icon-choice { display: grid; place-items: center; aspect-ratio: 1; border-radius: var(--radius-s); background: var(--body); color: var(--on-mat); }
 .icon-choice:hover { background: #3b4148; }
 .icon-choice .glyph { width: 30px; height: 30px; }
-.combo { min-height: 26px; font-size: 18px; font-weight: 600; }
-.kb-hex { flex: none; margin-left: 10px; font-size: 12px; color: var(--ink-soft); }
-.row input[maxlength="2"] { flex: 0 0 56px; }
+.combo { flex: 1; min-height: 26px; font-size: 18px; font-weight: 600; }
 .board { --unit: 42px; display: flex; flex-wrap: wrap; gap: 12px 16px; padding: 12px; border-radius: var(--radius-m); background: var(--body); overflow-x: auto; }
 .kb-block { display: flex; flex-direction: column; gap: 3px; }
 .kb-block.small { --unit: 40px; }

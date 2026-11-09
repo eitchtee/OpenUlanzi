@@ -74,6 +74,8 @@ const ACTION_GROUPS = [
     { name: 'Toggle between actions', icon: 'swap-bold', apply: (b) => { b.action = { toggle: [] }; } },
     { name: 'Random action', icon: 'shuffle-bold', apply: (b) => { b.action = { random: [] }; } },
     { name: 'Wait', icon: 'hourglass-bold', wait: true, apply: (b) => { b.action = { delay: 200 }; } },
+    { name: 'Hold keys down', icon: 'arrow-fat-down-bold', wait: true, apply: (b) => { b.action = { key_down: '' }; } },
+    { name: 'Let go of keys', icon: 'arrow-fat-up-bold', wait: true, apply: (b) => { b.action = { key_up: '' }; } },
   ]],
   ['Sound', [
     { name: 'Play sound file', icon: 'music-note-bold', apply: (b) => { b.action = { play_sound: '' }; } },
@@ -1086,12 +1088,13 @@ async function cropPicker(path, aspect, current, onPick) {
   }
 }
 
-function keyboardPicker(current, onSave) {
+/** `onSave(keys, gap)`; the gap field shows only when `options.gap` is a number. */
+async function keyboardPicker(current, onSave, options = {}) {
   const tokens = current ? current.split('+').map((t) => t.trim().toLowerCase()).filter(Boolean) : [];
-  const preferred = recall('keyboard') ?? (navigator.language === 'pt-BR' ? 'Brazilian (ABNT2)' : 'US (ANSI)');
-  const layout = h('select', { 'aria-label': 'Keyboard layout' }, ...Object.keys(LAYOUTS).map((n) => h('option', { value: n, selected: n === preferred }, n)));
+  const layout = await invoke('keyboard');
+  const board = { ...layout, byToken: new Map(layout.keys.map((key) => [key.token, key])), byCode: new Map(layout.keys.map((key) => [key.code, key])) };
   const combo = h('p', { class: 'combo' });
-  const board = h('div', { class: 'board' });
+  const keyboard = h('div', { class: 'board' });
 
   const toggle = (token) => {
     const at = tokens.indexOf(token);
@@ -1102,35 +1105,97 @@ function keyboardPicker(current, onSave) {
   const keyRow = (keys) => h('div', { class: 'kb-row' }, ...keys.map(([label, token, width]) => (label === null
     ? h('span', { class: 'kb-gap', style: `--w:${width}` })
     : h('button', { class: 'kb-key', style: `--w:${width}`, 'aria-pressed': String(tokens.includes(token)), onclick: () => toggle(token) }, label))));
-  const hex = h('input', { type: 'text', maxLength: 2, placeholder: 'EA', 'aria-label': 'Key code in hex' });
-  const addHex = () => {
-    const code = parseInt(hex.value, 16);
-    if (!code || code > 255) return notify('A key code is a hex number from 01 to FF.', true);
-    toggle(`vk${code.toString(16).padStart(2, '0')}`);
-    hex.value = '';
+
+  // Every key Windows names, for keys the drawing lacks; a bare hex code works too.
+  const search = h('input', { type: 'search', list: 'all-keys', placeholder: 'Search every key, or type a hex code', 'aria-label': 'Search every key' });
+  const allKeys = h('datalist', { id: 'all-keys' }, ...board.keys.map((key) => h('option', { value: `${key.name} (${key.token})` })));
+  const addSearched = () => {
+    const text = search.value.trim().toLowerCase();
+    const named = text.match(/\(([^()]+)\)$/)?.[1];
+    const code = parseInt(text.replace(/^vk/, ''), 16);
+    if (!named && !(/^(vk)?[0-9a-f]{1,2}$/.test(text) && code)) return notify('Pick a key from the list, or type a key code in hex from 01 to FF.', true);
+    toggle(named ?? board.byCode.get(code)?.token ?? `vk${code.toString(16).padStart(2, '0')}`);
+    search.value = '';
   };
+  search.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addSearched(); } });
+
+  // Recording takes every key, Esc and Tab included, and stops once all of them are up again.
+  let recording = false;
+  let ctrlAt = -Infinity;
+  const down = new Set();
+  const record = h('button', { type: 'button', onclick: () => setRecording(!recording) });
+  function setRecording(on) {
+    recording = on;
+    down.clear();
+    if (on) tokens.length = 0;
+    record.textContent = on ? 'Stop recording' : 'Record from keyboard';
+    record.classList.toggle('primary', on);
+    refresh();
+  }
+  const onKey = (e) => {
+    if (!recording) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    const token = eventToken(e, board);
+    if (!token || e.repeat) return;
+    if (e.type === 'keydown') {
+      // Windows sends AltGr as left Ctrl and right Alt at the same moment.
+      if (token === 'altgr' && e.timeStamp - ctrlAt < 50) {
+        down.delete('ctrl');
+        if (tokens.at(-1) === 'ctrl') tokens.pop();
+      }
+      if (token === 'ctrl') ctrlAt = e.timeStamp;
+      down.add(token);
+      if (!tokens.includes(token)) tokens.push(token);
+      refresh();
+      return;
+    }
+    // Print Screen only reports being let go.
+    if (!down.has(token) && !tokens.includes(token)) tokens.push(token);
+    down.delete(token);
+    if (!down.size) setRecording(false);
+  };
+  window.addEventListener('keydown', onKey, true);
+  window.addEventListener('keyup', onKey, true);
+  const dialog = $('dialog');
+  const keepOpen = (e) => { if (recording) e.preventDefault(); };
+  dialog.addEventListener('cancel', keepOpen);
+  dialog.addEventListener('close', () => {
+    window.removeEventListener('keydown', onKey, true);
+    window.removeEventListener('keyup', onKey, true);
+    dialog.removeEventListener('cancel', keepOpen);
+  }, { once: true });
+
+  const gapInput = typeof options.gap === 'number'
+    ? h('input', { type: 'number', value: options.gap, min: 0, max: MAX_KEY_GAP, step: 5 })
+    : null;
   function refresh() {
-    combo.textContent = tokens.length ? tokens.join(' + ') : 'Click keys in the order they should be pressed';
-    remember('keyboard', layout.value);
-    board.replaceChildren(
-      h('div', { class: 'kb-block' }, ...FUNCTION_ROWS.map(keyRow), ...LAYOUTS[layout.value].map(keyRow)),
+    combo.textContent = tokens.length ? tokens.join(' + ') : recording ? 'Press the keys, then let go' : 'Click keys in the order they should be pressed';
+    keyboard.replaceChildren(
+      h('div', { class: 'kb-block' }, ...FUNCTION_ROWS.map(keyRow), ...typingRows(board).map(keyRow)),
       h('div', { class: 'kb-side' },
         h('div', { class: 'kb-block small' }, ...NAV_BLOCK.map(keyRow)),
         h('div', { class: 'kb-block small' }, ...NUMPAD.map(keyRow))),
       h('div', { class: 'kb-media' }, keyRow(MEDIA_KEYS)),
     );
   }
-  layout.addEventListener('change', refresh);
+  const save = () => {
+    const gapMs = gapInput && Math.min(MAX_KEY_GAP, Math.max(0, Math.round(Number(gapInput.value) || 0)));
+    dialog.close();
+    onSave(tokens.join('+'), gapMs);
+  };
   openDialog(
     dialogHead('Choose keys'),
-    section('Selected keys', combo),
-    section('Keyboard', h('div', { class: 'row kb-options' }, layout, h('span', { class: 'kb-hex' }, 'Other key code'), hex, h('button', { onclick: addHex }, 'Add')), board),
+    section('Selected keys', h('div', { class: 'row' }, combo, record),
+      h('p', { class: 'hint' }, 'Windows keeps some keys to itself, like the Windows key and Alt+Tab. Click those on the keyboard below.')),
+    section('Keyboard', h('div', { class: 'row kb-options' }, search, allKeys, h('button', { type: 'button', onclick: addSearched }, 'Add')), keyboard),
+    ...(gapInput ? [section('Timing', field('Wait between keys (ms)', gapInput, `Some apps miss keys pressed too fast. Up to ${MAX_KEY_GAP} ms; to hold keys longer, use Hold keys down steps in a sequence.`))] : []),
     dialogFoot(
       h('button', { class: 'plain', onclick: () => { tokens.length = 0; refresh(); } }, 'Clear'),
-      h('button', { class: 'plain', onclick: () => $('dialog').close() }, 'Cancel'),
-      h('button', { class: 'plain primary', onclick: () => { $('dialog').close(); onSave(tokens.join('+')); } }, 'Use these keys')),
+      h('button', { class: 'plain', onclick: () => dialog.close() }, 'Cancel'),
+      h('button', { class: 'plain primary', onclick: save }, 'Use these keys')),
   );
-  refresh();
+  setRecording(false);
 }
 
 // ---------------------------------------------------------------- inspector
@@ -1148,10 +1213,11 @@ const ACTION_TYPES = [
   ['obs_media', 'OBS: Media source control'], ['obs_toggle_mute', 'OBS: Mute input'], ['obs_volume', 'OBS: Input volume'],
 ];
 const DELAY_TYPE = ['delay', 'Wait'];
+const KEY_STEP_TYPES = [['key_down', 'Hold keys down'], ['key_up', 'Let go of keys']];
 const SHOW_TYPE = ['show', 'Show a page while held'];
 const actionType = (a) => (!a ? 'none' : typeof a === 'string' ? a : a.obs ? `obs_${actionType(a.obs)}` : a.plugin ? `plugin:${a.plugin.id}:${a.plugin.action}` : Object.keys(a)[0]);
 
-const ACTION_NAMES = Object.fromEntries([...ACTION_TYPES, DELAY_TYPE, SHOW_TYPE]);
+const ACTION_NAMES = Object.fromEntries([...ACTION_TYPES, DELAY_TYPE, SHOW_TYPE, ...KEY_STEP_TYPES]);
 
 /** The action a list entry produces, so filled slots can reuse its icon. */
 function paletteResult(item) {
@@ -1173,7 +1239,7 @@ function fillSlot(item, options, commit, decorate) {
   ensureFolder(item);
   const result = paletteResult(item);
   if (item.knob || item.screen || item.view) return notify(` cannot go in an action slot. Drop it on a control.`, true);
-  if (item.wait && !options.delay) return notify('Wait only works inside a sequence.', true);
+  if (item.wait && !options.delay) return notify(`${item.name} only works inside a sequence.`, true);
   if (result.hold !== undefined) {
     if (result.hold.show === undefined) return notify('Drag the action to run into this slot.', true);
     if (!options.show) return notify('Showing a page only works in the When held slot.', true);
@@ -1334,12 +1400,18 @@ function actionEditor(label, action, commit, options = {}) {
     const input = h('input', { type: 'text', value: action[key], placeholder, oninput: () => commit({ [key]: input.value }, true) });
     return input;
   };
-  if (type === 'hotkey') {
-    const keys = action.hotkey ? action.hotkey.split('+').map((key) => h('kbd', {}, key.trim())) : ['Choose keys'];
+  if (type === 'hotkey' || type === 'key_down' || type === 'key_up') {
+    // A hotkey with its own gap is saved as { keys, gap }, otherwise as the plain keys.
+    const value = action[type];
+    const text = typeof value === 'string' ? value : value.keys;
+    const gapMs = type === 'hotkey' ? (typeof value === 'string' ? KEY_GAP : value.gap) : undefined;
+    const keys = text ? text.split('+').map((key) => h('kbd', {}, key.trim())) : ['Choose keys'];
     parts.push(h('button', {
       type: 'button', class: 'keys', title: 'Choose keys',
-      onclick: () => keyboardPicker(action.hotkey, (value) => commit({ hotkey: value })),
+      onclick: () => keyboardPicker(text, (picked, newGap) => commit({ [type]: newGap != null && newGap !== KEY_GAP ? { keys: picked, gap: newGap } : picked }), { gap: gapMs }),
     }, ...keys));
+    if (gapMs !== undefined && gapMs !== KEY_GAP) parts.push(h('p', { class: 'hint' }, `Waits ${gapMs} ms between keys.`));
+    if (type === 'key_down') parts.push(h('p', { class: 'hint' }, 'Stays down until a Let go of keys step, or until the sequence ends.'));
   } else if (type === 'text') {
     parts.push(textField('text', 'Text to type'));
   } else if (type === 'open') {

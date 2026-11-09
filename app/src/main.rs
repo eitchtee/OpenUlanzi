@@ -116,6 +116,11 @@ fn this_exe() -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
+fn keyboard() -> platform::Keyboard {
+    platform::keyboard()
+}
+
+#[tauri::command]
 fn app_version(app: AppHandle) -> String {
     app.package_info().version.to_string()
 }
@@ -390,7 +395,7 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _, _| show_main(app)))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--hidden"])))
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![app_version, check_update, install_update, open_release_notes, list_devices, forget_device, get_config, save_config, get_status, get_plugins, open_plugins_folder, render, picture, pick_file, icon_library, app_icon])
+        .invoke_handler(tauri::generate_handler![app_version, keyboard, check_update, install_update, open_release_notes, list_devices, forget_device, get_config, save_config, get_status, get_plugins, open_plugins_folder, render, picture, pick_file, icon_library, app_icon])
         .on_window_event(|window, event| {
             // Closing keeps the deck running; Quit in the tray ends it.
             if let (WindowEvent::CloseRequested { api, .. }, "main") = (event, window.label()) {
