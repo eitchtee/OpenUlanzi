@@ -110,10 +110,12 @@ fn key_input(key: u16, up: bool) -> INPUT {
     if up {
         flags |= KEYEVENTF_KEYUP;
     }
-    if is_extended(key) {
+    // Media keys are E0-prefixed; sent without the flag, apps reading scan codes see B/C instead of volume.
+    let scan = unsafe { MapVirtualKeyW(key as u32, MAPVK_VK_TO_VSC_EX) };
+    if is_extended(key) || scan >> 8 == 0xE0 {
         flags |= KEYEVENTF_EXTENDEDKEY;
     }
-    let scan = unsafe { MapVirtualKeyW(key as u32, MAPVK_VK_TO_VSC) } as u16;
+    let scan = (scan & 0xFF) as u16;
     INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
