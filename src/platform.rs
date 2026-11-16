@@ -262,9 +262,12 @@ const KEY_NAMES: &[(VIRTUAL_KEY, &str)] = &[
 pub fn open(target: &str) -> Result<()> {
     let (file, args) = split_command(target.trim(), |p| Path::new(p).exists());
     let args = (!args.is_empty()).then(|| HSTRING::from(args));
+    // Start in the target's own folder, like Explorer, so scripts find files next to them.
+    let dir = Path::new(file).is_absolute().then(|| Path::new(file).parent()).flatten().map(HSTRING::from);
     let result = unsafe {
         let args = args.as_ref().map_or(PCWSTR::null(), |a| PCWSTR(a.as_ptr()));
-        ShellExecuteW(Some(HWND::default()), w!("open"), &HSTRING::from(file), args, None, SW_SHOWNORMAL)
+        let dir = dir.as_ref().map_or(PCWSTR::null(), |d| PCWSTR(d.as_ptr()));
+        ShellExecuteW(Some(HWND::default()), w!("open"), &HSTRING::from(file), args, dir, SW_SHOWNORMAL)
     };
     // Documented contract: values above 32 mean success.
     if result.0 as usize <= 32 {
